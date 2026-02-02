@@ -14,16 +14,7 @@ import shutil
 import re
 from datetime import datetime
 
-# Try to import readline (available on Linux/Mac, need pyreadline3 on Windows)
-try:
-    import readline
-    READLINE_AVAILABLE = True
-except ImportError:
-    try:
-        import pyreadline3 as readline
-        READLINE_AVAILABLE = True
-    except ImportError:
-        READLINE_AVAILABLE = False
+# readline not used on Windows due to compatibility issues
 from PIL import Image
 from io import BytesIO
 import webbrowser
@@ -212,17 +203,10 @@ class WebSocketServer:
         self.http_server_thread.start()
     
     def async_print(self, message, end='\n'):
-        """Thread-safe print that shows notification inline without breaking input"""
+        """Thread-safe print that shows notification above current line"""
         with self.output_lock:
-            # Save what user is currently typing (if readline available)
-            current_input = ""
-            if READLINE_AVAILABLE:
-                current_input = readline.get_line_buffer()
-            
-            # Clear current line completely
+            # Move to start of line, clear it, print notification
             sys.stdout.write('\r\033[K')
-            
-            # Print the notification
             sys.stdout.write(message + end)
             
             # Redraw appropriate prompt
@@ -235,11 +219,6 @@ class WebSocketServer:
                 prompt = self.server_prompt()
             
             sys.stdout.write(prompt)
-            
-            # Restore what user was typing
-            if current_input:
-                sys.stdout.write(current_input)
-            
             sys.stdout.flush()
     
     def flush_messages(self):
