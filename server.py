@@ -12,6 +12,7 @@ import socketserver
 import sqlite3
 import shutil
 import re
+import readline
 from datetime import datetime
 from PIL import Image
 from io import BytesIO
@@ -203,17 +204,30 @@ class WebSocketServer:
     def async_print(self, message, end='\n'):
         """Thread-safe print that shows notification inline without breaking input"""
         with self.output_lock:
-            # Print notification on new line, then redraw prompt
-            sys.stdout.write('\r\033[K')  # Clear current line
+            # Save what user is currently typing
+            current_input = readline.get_line_buffer()
+            
+            # Clear current line completely
+            sys.stdout.write('\r\033[K')
+            
+            # Print the notification
             sys.stdout.write(message + end)
+            
             # Redraw appropriate prompt
             if self.active_session is not None:
                 if self.in_shell_mode and self.last_client_prompt:
-                    sys.stdout.write(self.last_client_prompt)
+                    prompt = self.last_client_prompt
                 else:
-                    sys.stdout.write(self.session_prompt(self.active_session))
+                    prompt = self.session_prompt(self.active_session)
             else:
-                sys.stdout.write(self.server_prompt())
+                prompt = self.server_prompt()
+            
+            sys.stdout.write(prompt)
+            
+            # Restore what user was typing
+            if current_input:
+                sys.stdout.write(current_input)
+            
             sys.stdout.flush()
     
     def flush_messages(self):
