@@ -12,8 +12,18 @@ import socketserver
 import sqlite3
 import shutil
 import re
-import readline
 from datetime import datetime
+
+# Try to import readline (available on Linux/Mac, need pyreadline3 on Windows)
+try:
+    import readline
+    READLINE_AVAILABLE = True
+except ImportError:
+    try:
+        import pyreadline3 as readline
+        READLINE_AVAILABLE = True
+    except ImportError:
+        READLINE_AVAILABLE = False
 from PIL import Image
 from io import BytesIO
 import webbrowser
@@ -204,8 +214,10 @@ class WebSocketServer:
     def async_print(self, message, end='\n'):
         """Thread-safe print that shows notification inline without breaking input"""
         with self.output_lock:
-            # Save what user is currently typing
-            current_input = readline.get_line_buffer()
+            # Save what user is currently typing (if readline available)
+            current_input = ""
+            if READLINE_AVAILABLE:
+                current_input = readline.get_line_buffer()
             
             # Clear current line completely
             sys.stdout.write('\r\033[K')
