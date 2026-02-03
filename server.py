@@ -2070,6 +2070,8 @@ class WebSocketServer:
                             await asyncio.sleep(0.1)
                             if self.last_client_prompt:
                                 break
+                        # Print newline to ensure prompt appears on fresh line
+                        print('', flush=True)
                         continue
                     elif cmd == 'exit' and self.in_shell_mode:
                         self.in_shell_mode = False
@@ -2098,6 +2100,8 @@ class WebSocketServer:
                         # If no new prompt, restore old one
                         if not self.last_client_prompt:
                             self.last_client_prompt = old_prompt
+                        # Print newline to ensure prompt appears on fresh line
+                        print('', flush=True)
                     else:
                         await asyncio.sleep(0.3)
                     
