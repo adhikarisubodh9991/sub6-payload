@@ -2060,16 +2060,17 @@ class WebSocketServer:
                     if cmd == 'shell':
                         self.in_shell_mode = True
                         self.last_client_prompt = ''
-                        # Send command and wait longer for shell to initialize
+                        # Send command and wait for shell to initialize
                         if not await self.send_command(session_id, cmd):
                             self.cprint(f"\n[!] Failed to send command")
                             self.in_shell_mode = False
                             break
-                        # Wait for shell prompt to arrive from client
-                        await asyncio.sleep(0.5)
-                        # If we still don't have a prompt, wait a bit more
-                        if not self.last_client_prompt:
-                            await asyncio.sleep(0.3)
+                        # Poll for shell prompt with timeout (max 5 seconds)
+                        # Fast connections return quickly, slow ones still work
+                        for _ in range(50):  # 50 * 0.1s = 5 second max
+                            await asyncio.sleep(0.1)
+                            if self.last_client_prompt:
+                                break
                         continue
                     elif cmd == 'exit' and self.in_shell_mode:
                         self.in_shell_mode = False
