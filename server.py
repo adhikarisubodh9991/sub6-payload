@@ -20,7 +20,6 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.output import ColorDepth
-from prompt_toolkit.application import get_app
 
 from PIL import Image
 from io import BytesIO
@@ -145,20 +144,8 @@ class WebSocketServer:
         self.in_shell_mode = False  # Track if user is in shell mode on client
         self.last_client_prompt = ""  # Store the last prompt received from client
         
-        # prompt_toolkit session for proper input handling - disable bell completely
-        from prompt_toolkit.key_binding import KeyBindings
-        kb = KeyBindings()
-        
-        @kb.add('c-g')  # Override ctrl+g (common bell trigger)
-        def _(event):
-            pass  # Do nothing instead of beeping
-        
-        self.prompt_session = PromptSession(
-            enable_system_prompt=False,
-            enable_suspend=False,
-            enable_open_in_editor=False,
-            key_bindings=kb,
-        )
+        # prompt_toolkit session for proper input handling
+        self.prompt_session = PromptSession()
         
         # Live view state
         self.liveview_session = None
@@ -699,8 +686,11 @@ class WebSocketServer:
                                     output = '\n'.join(lines[:-1])
                                     if output:
                                         print(output, flush=True)
+                                # If only prompt line, still print newline for spacing
                             else:
-                                print(text, end='', flush=True)
+                                # Not a prompt line, print everything
+                                if text.strip():
+                                    print(text, end='', flush=True)
                         else:
                             print(text, end='', flush=True)
                     except:
