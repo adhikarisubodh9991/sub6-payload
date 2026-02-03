@@ -704,8 +704,8 @@ class WebSocketServer:
             was_active = (self.active_session == session_id)
             if session_id in self.sessions:
                 del self.sessions[session_id]
-            if self.active_session == session_id:
-                self.active_session = None
+            # Don't clear active_session here - let interact() handle it via finally block
+            # This prevents race conditions where prompt gets stuck
             
             self.async_print(f"\033[91m[-]\033[0m Session \033[96m{session_id}\033[0m closed")
             if was_active:
@@ -1978,15 +1978,20 @@ class WebSocketServer:
         
         self.active_session = session_id
         
+        # Create an event to signal session closure
+        session_closed_event = asyncio.Event()
+        
+        # Store original sessions dict to detect closure
+        original_session = self.sessions.get(session_id)
+        
         self.cprint(f"\n[*] Interacting with session {session_id}")
         self.cprint("[*] Type 'background' to return to server prompt")
         self.cprint("[*] Type 'help' for commands\n")
         
         try:
             while self.running:
-                # Check if session still exists
+                # Check if session still exists BEFORE prompting
                 if session_id not in self.sessions:
-                    self.cprint("\n[!] Session closed - returning to server prompt")
                     break
                 
                 try:
@@ -1997,24 +2002,29 @@ class WebSocketServer:
                     else:
                         prompt = self.session_prompt(session_id)
                     
-                    # Use prompt_toolkit async prompt with timeout check
-                    import asyncio
-                    
                     # Create a task for prompt that we can cancel if session closes
                     prompt_task = asyncio.create_task(self.prompt_session.prompt_async(prompt))
                     
-                    while not prompt_task.done():
-                        if session_id not in self.sessions:
-                            prompt_task.cancel()
-                            self.cprint("\n[!] Session closed - returning to server prompt")
-                            raise asyncio.CancelledError()
-                        await asyncio.sleep(0.1)
-                    
-                    cmd = await prompt_task
+                    # Monitor session while waiting for input
+                    try:
+                        while not prompt_task.done():
+                            if session_id not in self.sessions:
+                                # Session closed - cancel prompt and exit cleanly
+                                prompt_task.cancel()
+                                try:
+                                    await prompt_task
+                                except asyncio.CancelledError:
+                                    pass
+                                # Force return to command loop
+                                return
+                            await asyncio.sleep(0.1)
+                        
+                        cmd = await prompt_task
+                    except asyncio.CancelledError:
+                        return
                     
                     # Double-check session still valid
                     if session_id not in self.sessions:
-                        self.cprint("\n[!] Session no longer exists")
                         break
                     
                     cmd = cmd.strip()
