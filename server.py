@@ -673,25 +673,8 @@ class WebSocketServer:
                 if self.active_session == session_id:
                     try:
                         text = data.decode('utf-8', errors='replace')
-                        
-                        # In shell mode, detect and save the prompt for next input
-                        if self.in_shell_mode:
-                            # Look for shell prompt at the end (shell:path>)
-                            lines = text.split('\n')
-                            last_line = lines[-1] if lines else ''
-                            
-                            # Check if last line is a shell prompt
-                            if last_line.strip().startswith('shell:') and last_line.strip().endswith('>'):
-                                self.last_client_prompt = last_line.strip() + ' '
-                                # Print everything except the prompt
-                                if len(lines) > 1:
-                                    output = '\n'.join(lines[:-1])
-                                    print(output, flush=True)
-                            else:
-                                # Just print everything as-is
-                                print(text, end='', flush=True)
-                        else:
-                            print(text, end='', flush=True)
+                        # Just print all output as it arrives - simple and reliable
+                        print(text, end='', flush=True)
                     except:
                         pass
         
@@ -1994,24 +1977,16 @@ class WebSocketServer:
                     break
                 
                 try:
-                    # Get appropriate prompt
-                    if self.in_shell_mode and self.last_client_prompt:
-                        prompt = self.last_client_prompt
-                    else:
-                        prompt = self.session_prompt(session_id)
-                    
-                    # For shell mode, use simple blocking input to avoid prompt issues
+                    # For shell mode, don't print prompt - client sends it
                     if self.in_shell_mode:
-                        # Print prompt and get input synchronously
+                        # Just wait for input - client's prompt is already printed
                         import sys
-                        print(prompt, end='', flush=True)
-                        
-                        # Use asyncio to read input while still monitoring session
                         loop = asyncio.get_event_loop()
                         cmd = await loop.run_in_executor(None, sys.stdin.readline)
                         cmd = cmd.strip()
                     else:
                         # Use prompt_toolkit for non-shell mode (fancy features)
+                        prompt = self.session_prompt(session_id)
                         prompt_task = asyncio.create_task(self.prompt_session.prompt_async(prompt))
                         
                         # Monitor session while waiting for input
@@ -2066,17 +2041,13 @@ class WebSocketServer:
                     # Track shell mode
                     if cmd == 'shell':
                         self.in_shell_mode = True
-                        self.last_client_prompt = ''
-                        # Send command and wait for shell to initialize
+                        # Send command - output/prompt will be printed by handle_session
                         if not await self.send_command(session_id, cmd):
                             self.cprint(f"\n[!] Failed to send command")
                             self.in_shell_mode = False
                             break
-                        # Wait for shell prompt with timeout (max 5 seconds)
-                        for _ in range(50):
-                            await asyncio.sleep(0.1)
-                            if self.last_client_prompt:
-                                break
+                        # Wait for output to arrive
+                        await asyncio.sleep(0.5)
                         continue
                     elif cmd == 'exit' and self.in_shell_mode:
                         self.in_shell_mode = False
@@ -2093,17 +2064,9 @@ class WebSocketServer:
                         self.cprint(f"\n[!] Failed to send command")
                         break
                     
-                    # Wait for response
+                    # Wait for response - shell mode waits longer for output
                     if self.in_shell_mode:
-                        # Wait for new prompt to arrive
-                        old_prompt = self.last_client_prompt
-                        self.last_client_prompt = ''
-                        for _ in range(50):  # 5 second max
-                            await asyncio.sleep(0.1)
-                            if self.last_client_prompt:
-                                break
-                        if not self.last_client_prompt:
-                            self.last_client_prompt = old_prompt
+                        await asyncio.sleep(0.3)  # Output printed by handle_session
                     else:
                         await asyncio.sleep(0.3)
                     
