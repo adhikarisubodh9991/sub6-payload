@@ -143,6 +143,7 @@ class WebSocketServer:
         self.message_queue = queue.Queue()  # Queue for async messages (won't interrupt typing)
         self.in_shell_mode = False  # Track if user is in shell mode on client
         self.last_client_prompt = ""  # Store the last prompt received from client
+        self.shell_output_received = False  # Track if shell output has been received
         
         # prompt_toolkit session for proper input handling
         self.prompt_session = PromptSession()
@@ -675,6 +676,9 @@ class WebSocketServer:
                         text = data.decode('utf-8', errors='replace')
                         # Just print all output as it arrives - simple and reliable
                         print(text, end='', flush=True)
+                        # Mark that we received output (for shell mode input sync)
+                        if self.in_shell_mode:
+                            self.shell_output_received = True
                     except:
                         pass
         
@@ -1980,13 +1984,19 @@ class WebSocketServer:
                     # For shell mode, don't print prompt - client sends it
                     if self.in_shell_mode:
                         import sys
-                        import select
-                        import msvcrt
+                        import ctypes
                         
-                        # Flush any buffered input that was typed during command execution
-                        # This prevents glitched output from accidental keystrokes
-                        while msvcrt.kbhit():
-                            msvcrt.getch()
+                        # Flush console input buffer using Windows API
+                        # This clears any keystrokes typed during command execution
+                        try:
+                            kernel32 = ctypes.windll.kernel32
+                            # Get console input handle
+                            STD_INPUT_HANDLE = -10
+                            handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+                            # Flush the console input buffer
+                            kernel32.FlushConsoleInputBuffer(handle)
+                        except:
+                            pass
                         
                         # Wait for input - client's prompt is already printed
                         loop = asyncio.get_event_loop()
@@ -2036,8 +2046,15 @@ class WebSocketServer:
                     
                     if cmd in ['clear', 'cls']:
                         self.clear_screen()
-                        if self.in_shell_mode and self.last_client_prompt:
-                            self.cprint(f"[*] Shell session active")
+                        if self.in_shell_mode:
+                            # In shell mode, send empty command to get fresh prompt
+                            self.cprint(f"[*] Shell session active\n")
+                            await self.send_command(session_id, "echo.")  # Get fresh prompt
+                            self.shell_output_received = False
+                            for _ in range(20):
+                                await asyncio.sleep(0.1)
+                                if self.shell_output_received:
+                                    break
                         else:
                             self.cprint(f"[*] Session {session_id} active")
                         continue
@@ -2072,9 +2089,16 @@ class WebSocketServer:
                         self.cprint(f"\n[!] Failed to send command")
                         break
                     
-                    # Wait for response - shell mode waits longer for output
+                    # Wait for response - shell mode polls for output
                     if self.in_shell_mode:
-                        await asyncio.sleep(0.3)  # Output printed by handle_session
+                        # Clear flag and wait for output to arrive
+                        self.shell_output_received = False
+                        for _ in range(50):  # Max 5 seconds
+                            await asyncio.sleep(0.1)
+                            if self.shell_output_received:
+                                # Output received, wait a bit more for any trailing data
+                                await asyncio.sleep(0.2)
+                                break
                     else:
                         await asyncio.sleep(0.3)
                     
