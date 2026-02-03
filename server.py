@@ -1979,8 +1979,16 @@ class WebSocketServer:
                 try:
                     # For shell mode, don't print prompt - client sends it
                     if self.in_shell_mode:
-                        # Just wait for input - client's prompt is already printed
                         import sys
+                        import select
+                        import msvcrt
+                        
+                        # Flush any buffered input that was typed during command execution
+                        # This prevents glitched output from accidental keystrokes
+                        while msvcrt.kbhit():
+                            msvcrt.getch()
+                        
+                        # Wait for input - client's prompt is already printed
                         loop = asyncio.get_event_loop()
                         cmd = await loop.run_in_executor(None, sys.stdin.readline)
                         cmd = cmd.strip()
