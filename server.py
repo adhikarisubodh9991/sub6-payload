@@ -2047,9 +2047,9 @@ class WebSocketServer:
                     if cmd in ['clear', 'cls']:
                         self.clear_screen()
                         if self.in_shell_mode:
-                            # In shell mode, send empty command to get fresh prompt
+                            # In shell mode, send pwd to get fresh prompt (works in PowerShell)
                             self.cprint(f"[*] Shell session active\n")
-                            await self.send_command(session_id, "echo.")  # Get fresh prompt
+                            await self.send_command(session_id, "$null")  # Silent command, just returns prompt
                             self.shell_output_received = False
                             for _ in range(20):
                                 await asyncio.sleep(0.1)
