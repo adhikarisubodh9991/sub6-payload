@@ -541,15 +541,14 @@ class WebSocketServer:
                 except:
                     pass
                 
-                # Check for screenshot data
-                if b'<<<SCREENSHOT_START>>>' in data or session['screenshot_mode']:
+                if b'<<<IMG_S>>>' in data or session['screenshot_mode']:
                     if not session['screenshot_mode']:
                         session['screenshot_mode'] = True
                         session['screenshot_data'] = b''
                     
                     session['screenshot_data'] += data
                     
-                    if b'<<<SCREENSHOT_END>>>' in session['screenshot_data']:
+                    if b'<<<IMG_E>>>' in session['screenshot_data']:
                         await self.save_screenshot(session_id, session['screenshot_data'])
                         session['screenshot_mode'] = False
                         session['screenshot_data'] = b''
@@ -718,16 +717,16 @@ class WebSocketServer:
     async def save_screenshot(self, session_id, data):
         """Save screenshot (handles base64 encoded data)"""
         try:
-            start = data.find(b'<<<SCREENSHOT_START>>>')
-            data_start = data.find(b'<<<DATA_START>>>')
-            end = data.find(b'<<<SCREENSHOT_END>>>')
+            start = data.find(b'<<<IMG_S>>>')
+            data_start = data.find(b'<<<D_S>>>')
+            end = data.find(b'<<<IMG_E>>>')
             
             if start == -1 or data_start == -1 or end == -1:
                 if self.active_session == session_id:
-                    self.message_queue.put("[!] Invalid screenshot format")
+                    self.message_queue.put("[!] Invalid format")
                 return
             
-            header = data[start+22:data_start].decode('utf-8')
+            header = data[start+11:data_start].decode('utf-8')
             parts = header.split('|')
             
             if len(parts) < 3:
@@ -739,14 +738,12 @@ class WebSocketServer:
             height = int(parts[1])
             expected_size = int(parts[2])
             
-            pixel_start = data_start + 16  # <<<DATA_START>>> is 16 chars
+            pixel_start = data_start + 9  # <<<D_S>>> is 9 chars
             b64_data = data[pixel_start:end]
             
-            # Clean base64 data - remove any non-base64 characters
             import re
             b64_clean = re.sub(rb'[^A-Za-z0-9+/=]', b'', b64_data)
             
-            # Decode base64 to get raw pixel data
             try:
                 pixel_data = base64.b64decode(b64_clean)
             except Exception as e:
