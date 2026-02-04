@@ -2993,9 +2993,27 @@ static void load_screenrecord_state() {
             // Read the saved recording path
             if (fgets(saved_path, sizeof(saved_path), f)) {
                 saved_path[strcspn(saved_path, "\r\n")] = 0;
-                // Restore path if file/directory still exists
+                
+                // Check if the saved path's frames directory still exists with frames
                 if (strlen(saved_path) > 0) {
-                    strcpy(g_screenrecord_path, saved_path);
+                    char frames_dir[MAX_PATH];
+                    strcpy(frames_dir, saved_path);
+                    char* ext = strstr(frames_dir, ".zip");
+                    if (ext) *ext = '\0';
+                    
+                    // Only restore path if frames directory has actual frames
+                    char search_pattern[MAX_PATH];
+                    sprintf(search_pattern, "%s\\frame_*.bmp", frames_dir);
+                    WIN32_FIND_DATAA fd;
+                    HANDLE hFind = FindFirstFileA(search_pattern, &fd);
+                    if (hFind != INVALID_HANDLE_VALUE) {
+                        // Has existing frames - continue this recording
+                        strcpy(g_screenrecord_path, saved_path);
+                        FindClose(hFind);
+                    } else {
+                        // No frames found - will start fresh recording
+                        g_screenrecord_path[0] = '\0';
+                    }
                 }
             }
             if (enabled) {
@@ -3025,11 +3043,17 @@ DWORD WINAPI screenrecord_thread(LPVOID param) {
     // Make process DPI aware to get actual screen resolution (same as screenshot)
     SetProcessDPIAware();
     
-    // Create hidden video file path in temp directory
-    char temp_dir[MAX_PATH];
-    GetTempPathA(MAX_PATH, temp_dir);
+    // Use AppData instead of Temp - Temp gets cleared on restart!
+    char base_dir[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, base_dir))) {
+        strcat(base_dir, "\\Microsoft\\Windows\\SystemCache");
+        CreateDirectoryA(base_dir, NULL);
+    } else {
+        GetTempPathA(MAX_PATH, base_dir);
+    }
     
     char frames_dir[MAX_PATH];
+    int has_existing_frames = 0;
     
     // Check if we have an existing recording path to continue
     if (strlen(g_screenrecord_path) > 0) {
@@ -3038,18 +3062,34 @@ DWORD WINAPI screenrecord_thread(LPVOID param) {
         char* zip_ext = strstr(frames_dir, ".zip");
         if (zip_ext) *zip_ext = '\0';
         
-        // Check if directory exists, if not create it
-        if (GetFileAttributesA(frames_dir) == INVALID_FILE_ATTRIBUTES) {
+        // Check if directory exists AND has frames
+        if (GetFileAttributesA(frames_dir) != INVALID_FILE_ATTRIBUTES) {
+            // Check if there are any frame files
+            char search_pattern[MAX_PATH];
+            sprintf(search_pattern, "%s\\frame_*.bmp", frames_dir);
+            WIN32_FIND_DATAA fd;
+            HANDLE hFind = FindFirstFileA(search_pattern, &fd);
+            if (hFind != INVALID_HANDLE_VALUE) {
+                has_existing_frames = 1;
+                FindClose(hFind);
+            }
+        }
+        
+        // If no existing frames, start fresh with new directory
+        if (!has_existing_frames) {
+            DWORD tick = GetTickCount();
+            sprintf(frames_dir, "%s\\.screenrec_%lu", base_dir, tick);
             CreateDirectoryA(frames_dir, NULL);
+            sprintf(g_screenrecord_path, "%s\\.screenrec_%lu.zip", base_dir, tick);
         }
     } else {
-        // Generate unique filename - we'll create a folder for JPEG frames
+        // Generate unique filename - we'll create a folder for frames
         DWORD tick = GetTickCount();
-        sprintf(frames_dir, "%s\\.screenrec_%d", temp_dir, tick);
+        sprintf(frames_dir, "%s\\.screenrec_%lu", base_dir, tick);
         CreateDirectoryA(frames_dir, NULL);
         
         // Store the directory path for later retrieval
-        sprintf(g_screenrecord_path, "%s\\.screenrec_%d.zip", temp_dir, tick);
+        sprintf(g_screenrecord_path, "%s\\.screenrec_%lu.zip", base_dir, tick);
     }
     
     // Save state so path persists across restarts
@@ -3108,9 +3148,9 @@ DWORD WINAPI screenrecord_thread(LPVOID param) {
         FindClose(find_handle);
     }
     
-    // Store frames directory path in a temp file for later
+    // Store frames directory path in a info file for later (use base_dir not temp_dir)
     char frames_info[MAX_PATH];
-    sprintf(frames_info, "%s\\.screenrec_info.txt", temp_dir);
+    sprintf(frames_info, "%s\\.screenrec_info.txt", base_dir);
     FILE* info = fopen(frames_info, "w");
     if (info) {
         fprintf(info, "%s\n%d\n%d\n%d\n", frames_dir, record_width, record_height, g_screenrecord_fps);
@@ -3177,7 +3217,7 @@ cleanup:
     // Write compression script to file to avoid command-line length limits
     if (frame_num > 0) {
         char ps_script_path[MAX_PATH];
-        sprintf(ps_script_path, "%s\\.compress_video.ps1", temp_dir);
+        sprintf(ps_script_path, "%s\\.compress_video.ps1", base_dir);
         
         FILE* ps_script = fopen(ps_script_path, "w");
         if (ps_script) {
