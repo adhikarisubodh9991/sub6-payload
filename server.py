@@ -220,8 +220,15 @@ class WebSocketServer:
         """
         Thread-safe notification that doesn't break user input.
         Uses prompt_toolkit's print_formatted_text to properly render ANSI colors.
+        If in shell mode, queue messages to avoid interrupting raw stdin.
         """
-        # Use print_formatted_text with ANSI to properly render colors
+        # When in shell mode, always queue the message - never print directly
+        # Shell mode uses raw stdin.readline() which gets corrupted by direct prints
+        if self.in_shell_mode:
+            self.message_queue.put(message)
+            return
+        
+        # Not in shell mode - print immediately
         print_formatted_text(ANSI(message))
     
     def flush_messages(self):
@@ -2031,9 +2038,10 @@ class WebSocketServer:
                         break
                     
                     if cmd.lower() in ['background', 'back', 'bg']:
-                        self.cprint(f"\n[*] Backgrounding session {session_id}\n")
                         self.in_shell_mode = False
                         self.last_client_prompt = ''
+                        self.flush_messages()  # Show any queued notifications
+                        self.cprint(f"\n[*] Backgrounding session {session_id}\n")
                         break
                     
                     if cmd == '':
@@ -2100,6 +2108,7 @@ class WebSocketServer:
                                 # Output received, wait a bit more for any trailing data
                                 await asyncio.sleep(0.2)
                                 break
+                        # Don't flush notifications here - they'll appear when user exits shell
                     else:
                         await asyncio.sleep(0.3)
                     
@@ -2112,6 +2121,8 @@ class WebSocketServer:
             self.active_session = None
             self.in_shell_mode = False
             self.last_client_prompt = ''
+            # Flush any notifications that were queued during shell mode
+            self.flush_messages()
     
     def list_sessions(self):
         """List active sessions"""
