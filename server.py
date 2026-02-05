@@ -13,7 +13,21 @@ import sqlite3
 import shutil
 import re
 import warnings
+import ctypes
 from datetime import datetime
+
+# Enable ANSI escape codes on Windows
+if sys.platform == 'win32':
+    kernel32 = ctypes.windll.kernel32
+    # Enable VIRTUAL_TERMINAL_PROCESSING for stdout and stderr
+    STD_OUTPUT_HANDLE = -11
+    STD_ERROR_HANDLE = -12
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+    for handle_id in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]:
+        handle = kernel32.GetStdHandle(handle_id)
+        mode = ctypes.c_ulong()
+        kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+        kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
 
 # Suppress asyncio task warnings on exit
 warnings.filterwarnings("ignore", message=".*Task exception was never retrieved.*")

