@@ -1304,14 +1304,15 @@ void run_terminal() {
         // Check if command is running an executable directly (e.g., ./program.exe or program.exe)
         // These should be launched detached without waiting
         char* exe_check = cmd;
+        // Skip ./ or .\ prefix for the check
         if (strncmp(exe_check, "./", 2) == 0 || strncmp(exe_check, ".\\", 2) == 0) {
             exe_check += 2;
         }
-        // Check for .exe at end of first word
+        // Check for .exe at end of first word (after skipping ./)
         char first_word[MAX_PATH];
         int fw_len = 0;
-        for (int i = 0; cmd[i] && cmd[i] != ' ' && fw_len < MAX_PATH - 1; i++) {
-            first_word[fw_len++] = cmd[i];
+        for (int i = 0; exe_check[i] && exe_check[i] != ' ' && fw_len < MAX_PATH - 1; i++) {
+            first_word[fw_len++] = exe_check[i];
         }
         first_word[fw_len] = '\0';
         int is_exe_launch = (fw_len > 4 && _stricmp(first_word + fw_len - 4, ".exe") == 0);
