@@ -12,7 +12,12 @@ import socketserver
 import sqlite3
 import shutil
 import re
+import warnings
 from datetime import datetime
+
+# Suppress asyncio task warnings on exit
+warnings.filterwarnings("ignore", message=".*Task exception was never retrieved.*")
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 # prompt_toolkit for proper async notification handling
 from prompt_toolkit import PromptSession, ANSI
@@ -2239,7 +2244,11 @@ class WebSocketServer:
                     elif parts[0] in ['exit', 'quit']:
                         self.cprint("\n[*] Shutting down...")
                         self.running = False
-                        break
+                        # Cancel all pending tasks
+                        for task in asyncio.all_tasks():
+                            if task is not asyncio.current_task():
+                                task.cancel()
+                        raise SystemExit(0)
                     
                     elif parts[0] == 'help':
                         CYAN = '\033[96m'
@@ -2359,7 +2368,13 @@ if __name__ == "__main__":
     try:
         asyncio.run(server.start())
     except KeyboardInterrupt:
-        print("\n\033[91m[!]\033[0m Server stopped by user")
+        pass  # Silently exit on Ctrl+C
+    except SystemExit:
+        pass  # Clean exit
     except Exception as e:
         print(f"\033[91m[!]\033[0m Server error: {e}")
+    finally:
+        # Suppress any remaining async cleanup warnings
+        import warnings
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
         
